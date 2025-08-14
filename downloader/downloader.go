@@ -418,6 +418,8 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			"--geo-bypass",
 			"--no-check-certificate",
 			"--concurrent-fragments", "16",
+			"--downloader", "aria2c",
+			"--downloader-args", "aria2c:--max-connection-per-server=16 --split=16 --max-concurrent-downloads=16",
 			"--output", tempDir + "/" + d.cfg.OutputTemplate,
 		}
 		if d.cfg.IsAudioOnly {
