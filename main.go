@@ -1,14 +1,23 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"yaria/config"
 	"yaria/downloader"
 	"yaria/logger"
 	"yaria/tui"
 	"yaria/utils"
+
+	"github.com/google/go-github/v62/github"
 )
 
 func main() {
@@ -22,7 +31,160 @@ func main() {
 	args := flag.Args()
 	cfg := config.New()
 	log := logger.NewConsoleLogger()
-	tui := tui.New(cfg, log)
+	tuiInstance := tui.New(cfg, log)
+
+	// Initialize dependencies
+	exePath, err := os.Executable()
+	if err != nil {
+		exePath, _ = os.Getwd() // Fallback to current directory
+	}
+	depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
+	if err := os.MkdirAll(depsDir, 0755); err != nil {
+		log.Error("❌ Error: Failed to create dependencies directory: %v", err)
+		os.Exit(1)
+	}
+
+	// Check and download yt-dlp
+	ytDlpBinary := "yt-dlp"
+	if runtime.GOOS == "windows" {
+		ytDlpBinary = "yt-dlp.exe"
+	}
+	ytDlpPath := filepath.Join(depsDir, ytDlpBinary)
+	if _, err := exec.LookPath(ytDlpBinary); err != nil {
+		if _, err := os.Stat(ytDlpPath); err != nil {
+			log.Info("⬇️ Downloading yt-dlp from GitHub...")
+			client := github.NewClient(nil)
+			release, _, err := client.Repositories.GetLatestRelease(context.Background(), "yt-dlp", "yt-dlp")
+			if err != nil {
+				log.Error("❌ Error: Failed to fetch yt-dlp release: %v", err)
+				os.Exit(1)
+			}
+			var downloadURL string
+			for _, asset := range release.Assets {
+				if asset.GetName() == ytDlpBinary {
+					downloadURL = asset.GetBrowserDownloadURL()
+					break
+				}
+			}
+			if downloadURL == "" {
+				log.Error("❌ Error: No suitable yt-dlp binary found")
+				os.Exit(1)
+			}
+			resp, err := http.Get(downloadURL)
+			if err != nil {
+				log.Error("❌ Error: Failed to download yt-dlp: %v", err)
+				os.Exit(1)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				log.Error("❌ Error: Failed to download yt-dlp: HTTP status %s", resp.Status)
+				os.Exit(1)
+			}
+			out, err := os.Create(ytDlpPath)
+			if err != nil {
+				log.Error("❌ Error: Failed to create yt-dlp binary: %v", err)
+				os.Exit(1)
+			}
+			_, err = io.Copy(out, resp.Body)
+			out.Close()
+			if err != nil {
+				log.Error("❌ Error: Failed to save yt-dlp: %v", err)
+				os.Exit(1)
+			}
+			if runtime.GOOS != "windows" {
+				if err := os.Chmod(ytDlpPath, 0755); err != nil {
+					log.Error("❌ Error: Failed to set permissions for yt-dlp: %v", err)
+					os.Exit(1)
+				}
+			}
+			log.Info("✅ Downloaded yt-dlp to %s", ytDlpPath)
+		} else {
+			log.Info("✅ Found yt-dlp in dependencies at %s", ytDlpPath)
+		}
+	} else {
+		log.Info("✅ Found yt-dlp in system PATH")
+	}
+
+	// Check and download aria2
+	aria2Binary := "aria2c"
+	if runtime.GOOS == "windows" {
+		aria2Binary = "aria2c.exe"
+	}
+	aria2Path := filepath.Join(depsDir, aria2Binary)
+	if _, err := exec.LookPath(aria2Binary); err != nil {
+		if _, err := os.Stat(aria2Path); err != nil {
+			log.Info("⬇️ Downloading aria2 from GitHub...")
+			client := github.NewClient(nil)
+			release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
+			if err != nil {
+				log.Warn("⚠️ Warning: Failed to fetch aria2 release: %v", err)
+				cfg.UseAria2c = false
+			} else {
+				assetPattern := fmt.Sprintf("aria2-[0-9.]+-%s-%s", runtime.GOOS, runtime.GOARCH)
+				var downloadURL string
+				for _, asset := range release.Assets {
+					if strings.Contains(asset.GetName(), assetPattern) && !strings.Contains(asset.GetName(), ".tar.") && !strings.Contains(asset.GetName(), ".zip") {
+						downloadURL = asset.GetBrowserDownloadURL()
+						break
+					}
+				}
+				if downloadURL == "" {
+					log.Warn("⚠️ Warning: No suitable aria2 binary found")
+					cfg.UseAria2c = false
+				} else {
+					resp, err := http.Get(downloadURL)
+					if err != nil {
+						log.Warn("⚠️ Warning: Failed to download aria2: %v", err)
+						cfg.UseAria2c = false
+					} else {
+						defer resp.Body.Close()
+						if resp.StatusCode != http.StatusOK {
+							log.Warn("⚠️ Warning: Failed to download aria2: HTTP status %s", resp.Status)
+							cfg.UseAria2c = false
+						} else {
+							out, err := os.Create(aria2Path)
+							if err != nil {
+								log.Warn("⚠️ Warning: Failed to create aria2 binary: %v", err)
+								cfg.UseAria2c = false
+							} else {
+								_, err = io.Copy(out, resp.Body)
+								out.Close()
+								if err != nil {
+									log.Warn("⚠️ Warning: Failed to save aria2: %v", err)
+									cfg.UseAria2c = false
+								} else if runtime.GOOS != "windows" {
+									if err := os.Chmod(aria2Path, 0755); err != nil {
+										log.Warn("⚠️ Warning: Failed to set permissions for aria2: %v", err)
+										cfg.UseAria2c = false
+									} else {
+										log.Info("✅ Downloaded aria2 to %s", aria2Path)
+										cfg.UseAria2c = true
+									}
+								} else {
+									log.Info("✅ Downloaded aria2 to %s", aria2Path)
+									cfg.UseAria2c = true
+								}
+							}
+						}
+					}
+				}
+			}
+		} else {
+			log.Info("✅ Found aria2 in dependencies at %s", aria2Path)
+			cfg.UseAria2c = true
+		}
+	} else {
+		log.Info("✅ Found aria2 in system PATH")
+		cfg.UseAria2c = true
+	}
+
+	// Update PATH to include dependencies folder
+	currentPath := os.Getenv("PATH")
+	newPath := depsDir + string(os.PathListSeparator) + currentPath
+	if err := os.Setenv("PATH", newPath); err != nil {
+		log.Error("❌ Error: Failed to update PATH: %v", err)
+		os.Exit(1)
+	}
 
 	// Check dependencies
 	dl, err := downloader.New(cfg)
@@ -30,7 +192,7 @@ func main() {
 		log.Error("❌ Error: %v", err)
 		os.Exit(1)
 	}
-	tui.SetDownloader(dl)
+	tuiInstance.SetDownloader(dl)
 
 	originalDir, err := os.Getwd()
 	if err != nil {
@@ -45,15 +207,15 @@ func main() {
 
 	if len(args) == 0 {
 		// Run TUI to get URL
-		if err := tui.Run("", ""); err != nil {
+		if err := tuiInstance.Run("", ""); err != nil {
 			log.Error("❌ Error: Failed to run TUI: %v", err)
 			os.Exit(1)
 		}
-		if !tui.Confirmed || tui.URL == "" {
+		if !tuiInstance.Confirmed || tuiInstance.URL == "" {
 			log.Info("ℹ️ No URL provided or download cancelled")
 			os.Exit(0)
 		}
-		url = tui.URL
+		url = tuiInstance.URL
 		args = []string{url}
 	} else {
 		url = args[0]
@@ -106,11 +268,11 @@ func main() {
 		}
 
 		// Run TUI for format, resolution, and confirmation
-		if err := tui.Run(url, videoTitle); err != nil {
+		if err := tuiInstance.Run(url, videoTitle); err != nil {
 			log.Error("❌ Error: Failed to run TUI: %v", err)
 			os.Exit(1)
 		}
-		if !tui.Confirmed {
+		if !tuiInstance.Confirmed {
 			log.Info("ℹ️ Download cancelled by user")
 			os.Exit(0)
 		}
