@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 	"yaria/config"
@@ -10,9 +12,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/term"
 )
 
-// state represents the TUI's current screen
 type state int
 
 const (
@@ -23,7 +25,6 @@ const (
 	loadingState
 )
 
-// Model represents the TUI state
 type Model struct {
 	cfg          *config.Config
 	log          logger.Logger
@@ -42,22 +43,22 @@ type Model struct {
 	loadingDots  string
 }
 
-// Create new TUI model
 func New(cfg *config.Config, log logger.Logger) *Model {
 	return &Model{
-		cfg:     cfg,
-		log:     log,
-		state:   urlState,
-		choices: []string{"Video (with audio)", "Audio only"},
+		cfg:   cfg,
+		log:   log,
+		state: urlState,
+		choices: []string{
+			"Video (with audio)",
+			"Audio only",
+		},
 	}
 }
 
-// SetDownloader sets the downloader instance
 func (m *Model) SetDownloader(dl downloader.Downloader) {
 	m.dl = dl
 }
 
-// Run starts the Bubble Tea program
 func (m *Model) Run(url, title string) error {
 	m.url = url
 	m.title = title
@@ -69,9 +70,6 @@ func (m *Model) Run(url, title string) error {
 	return err
 }
 
-// Bubble Tea methods
-
-// Init initializes the model
 func (m *Model) Init() tea.Cmd {
 	if m.state == formatState && m.url != "" {
 		return m.startLoading
@@ -79,14 +77,12 @@ func (m *Model) Init() tea.Cmd {
 	return nil
 }
 
-// startLoading starts the loading animation
 func (m *Model) startLoading() tea.Msg {
 	return tickMsg{}
 }
 
 type tickMsg struct{}
 
-// Update handles user input and state transitions
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.state {
 	case urlState:
@@ -114,13 +110,7 @@ func (m *Model) updateURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m.url = m.URL
-			// Fetch title
-			var err error
-			_, m.title, err = m.dl.GetMetadata([]string{m.URL})
-			if err != nil {
-				m.log.Error("❌ Error: Failed to fetch video title: %v", err)
-				return m, tea.Quit
-			}
+			_, m.title, _ = m.dl.GetMetadata([]string{m.URL})
 			m.state = formatState
 			m.cursor = 0
 			return m, m.startLoading
@@ -180,27 +170,28 @@ func (m *Model) updateFormat(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tickMsg:
-		// Loading animation
 		m.loadingDots = strings.Repeat(".", (int(time.Since(m.loadingStart)/time.Millisecond/500)%3)+1)
-		// Fetch formats
 		formats, err := m.dl.GetFormats(m.url)
 		if err != nil {
 			m.log.Error("❌ Failed to fetch formats: %v", err)
 			return m, tea.Quit
 		}
 		m.formats = formats
-		m.videoFormats = make([]downloader.Format, 0)
+		m.videoFormats = []downloader.Format{}
 		for _, f := range formats {
 			if !f.IsAudio {
 				m.videoFormats = append(m.videoFormats, f)
 			}
 		}
 		if len(m.videoFormats) == 0 {
-			m.log.Warn("⚠️ No specific video formats available, using default (best available)")
-			m.cfg.Resolution = "" // Fallback to default
+			m.cfg.Resolution = ""
 			m.state = confirmationState
 			m.cursor = 0
 		} else {
+			m.choices = []string{"Default (best available)"}
+			for _, f := range m.videoFormats {
+				m.choices = append(m.choices, fmt.Sprintf("%dp (%s, %s)", f.Height, f.Ext, f.Protocol))
+			}
 			m.state = resolutionState
 			m.cursor = 0
 		}
@@ -222,12 +213,12 @@ func (m *Model) updateResolution(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.videoFormats) {
+			if m.cursor < len(m.choices)-1 {
 				m.cursor++
 			}
 		case "enter":
 			if m.cursor == 0 {
-				m.cfg.Resolution = "" // Default resolution
+				m.cfg.Resolution = ""
 			} else {
 				m.cfg.Resolution = m.videoFormats[m.cursor-1].ID
 			}
@@ -254,42 +245,42 @@ func (m *Model) updateConfirmation(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the TUI
-func (m *Model) View() string {
-	// Styles
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("205")).
-		Padding(0, 1)
-	choiceStyle := lipgloss.NewStyle().
-		PaddingLeft(2)
-	selectedStyle := lipgloss.NewStyle().
-		PaddingLeft(2).
-		Foreground(lipgloss.Color("212")).
-		Bold(true)
-	inputStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		Padding(0, 1).
-		MarginTop(1)
-	panelStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(1).
-		Margin(1).
-		Width(50)
-	footerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("243")).
-		MarginTop(1)
+func getTerminalSize() (width, height int) {
+	if w, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && w > 0 {
+		width = w
+	}
+	if h, err := strconv.Atoi(os.Getenv("LINES")); err == nil && h > 0 {
+		height = h
+	}
+	if w, h2, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+		width, height = w, h2
+	}
+	if width == 0 {
+		width = 80
+	}
+	if height == 0 {
+		height = 24
+	}
+	return
+}
 
-	// Main content
+func (m *Model) View() string {
+	termW, termH := getTerminalSize()
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).PaddingBottom(1).Align(lipgloss.Center)
+	choiceStyle := lipgloss.NewStyle().PaddingLeft(2)
+	selectedStyle := lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("212")).Bold(true)
+	inputStyle := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).MarginTop(1).Align(lipgloss.Center)
+	panelStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).Align(lipgloss.Center)
+	footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Align(lipgloss.Center)
+
 	var mainContent strings.Builder
 	switch m.state {
 	case urlState:
-		mainContent.WriteString(headerStyle.Render("Enter video URL:"))
+		mainContent.WriteString(headerStyle.Render("Enter video URL"))
 		mainContent.WriteString("\n")
 		mainContent.WriteString(inputStyle.Render(m.urlInput + "|"))
-		mainContent.WriteString("\n")
 	case formatState:
-		mainContent.WriteString(headerStyle.Render("Select download format:"))
+		mainContent.WriteString(headerStyle.Render("Select download format"))
 		mainContent.WriteString("\n")
 		for i, choice := range m.choices {
 			if m.cursor == i {
@@ -301,31 +292,25 @@ func (m *Model) View() string {
 		}
 	case loadingState:
 		mainContent.WriteString(headerStyle.Render("Fetching formats" + m.loadingDots))
-		mainContent.WriteString("\n")
 	case resolutionState:
-		mainContent.WriteString(headerStyle.Render("Select resolution:"))
+		mainContent.WriteString(headerStyle.Render("Select resolution"))
 		mainContent.WriteString("\n")
-		if m.cursor == 0 {
-			mainContent.WriteString(selectedStyle.Render("> Default (best available)"))
-		} else {
-			mainContent.WriteString(choiceStyle.Render("  Default (best available)"))
-		}
-		mainContent.WriteString("\n")
-		for i, format := range m.videoFormats {
-			if m.cursor == i+1 {
-				mainContent.WriteString(selectedStyle.Render(fmt.Sprintf("> %dp (%s, %s)", format.Height, format.Ext, format.Protocol)))
+		for i, choice := range m.choices {
+			if m.cursor == i {
+				mainContent.WriteString(selectedStyle.Render(fmt.Sprintf("> %s", choice)))
 			} else {
-				mainContent.WriteString(choiceStyle.Render(fmt.Sprintf("  %dp (%s, %s)", format.Height, format.Ext, format.Protocol)))
+				mainContent.WriteString(choiceStyle.Render(fmt.Sprintf("  %s", choice)))
 			}
 			mainContent.WriteString("\n")
 		}
-		mainContent.WriteString("\nNote: Some formats may be restricted by YouTube. If download fails, try Default or run `yt-dlp --list-formats <URL>`.\n")
+		mainContent.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render(
+			"Note: Some formats may be restricted by YouTube.\nIf download fails, try Default or run `yt-dlp --list-formats <URL>`."))
 	case confirmationState:
 		mainContent.WriteString(headerStyle.Render(fmt.Sprintf("Download '%s'? (y/n)", m.title)))
-		mainContent.WriteString("\n")
 	}
 
-	// Render main panel
 	mainPanel := panelStyle.Render(mainContent.String())
-	return lipgloss.JoinVertical(lipgloss.Left, mainPanel, footerStyle.Render("Press q to quit."))
+	ui := lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, mainPanel)
+	_ = footerStyle.Render("Press q to quit")
+	return ui
 }

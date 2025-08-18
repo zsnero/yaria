@@ -1,12 +1,11 @@
 package logger
 
 import (
-	"fmt"
-	"io"
 	"os"
+
+	"github.com/sirupsen/logrus"
 )
 
-// Logger interface for logging
 type Logger interface {
 	Info(format string, args ...any)
 	Warn(format string, args ...any)
@@ -14,24 +13,28 @@ type Logger interface {
 }
 
 type ConsoleLogger struct {
-	stdout io.Writer
+	logger *logrus.Logger
 }
 
 func NewConsoleLogger() *ConsoleLogger {
-	return &ConsoleLogger{stdout: os.Stdout}
+	logger := logrus.New()
+	logger.SetOutput(os.Stdout)
+	logger.SetFormatter(&logrus.TextFormatter{
+		ForceColors:   true,
+		FullTimestamp: true,
+	})
+	logger.SetLevel(logrus.InfoLevel)
+	return &ConsoleLogger{logger: logger}
 }
 
-// Info
 func (l *ConsoleLogger) Info(format string, args ...any) {
-	fmt.Fprintf(l.stdout, format+"\n", args...)
+	l.logger.Infof(format, args...)
 }
 
-// Warning
 func (l *ConsoleLogger) Warn(format string, args ...any) {
-	fmt.Fprintf(l.stdout, format+"\n", args...)
+	l.logger.Warnf(format, args...)
 }
 
-// Error
 func (l *ConsoleLogger) Error(format string, args ...any) {
-	fmt.Fprintf(l.stdout, format+"\n", args...)
+	l.logger.Errorf(format, args...)
 }

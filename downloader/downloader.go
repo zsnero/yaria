@@ -58,7 +58,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	if info, err := os.Stat(lastCheckFile); err == nil {
 		if time.Since(info.ModTime()) < 24*time.Hour {
 			shouldCheckVersions = false
-			fmt.Fprintf(cfg.Stderr, "ℹ️ Skipping version check, last checked at %s\n", info.ModTime().Format(time.RFC3339))
+			fmt.Fprintf(cfg.Stderr, "Skipping version check, last checked at %s\n", info.ModTime().Format(time.RFC3339))
 		}
 	}
 
@@ -83,7 +83,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 			cmd := exec.Command(ytDlpPath, "--version")
 			localVersion, err := cmd.Output()
 			if err != nil {
-				fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to check yt-dlp version: %v\n", err)
+				fmt.Fprintf(cfg.Stderr, "Warning: Failed to check yt-dlp version: %v\n", err)
 				shouldDownloadYTDLP = true
 			} else {
 				release, _, err := client.Repositories.GetLatestRelease(context.Background(), "yt-dlp", "yt-dlp")
@@ -93,21 +93,21 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 				latestVersion := strings.TrimPrefix(release.GetTagName(), "v")
 				localVersionStr := strings.TrimSpace(string(localVersion))
 				if localVersionStr != latestVersion {
-					fmt.Fprintf(cfg.Stderr, "ℹ️ Local yt-dlp version %s is outdated, latest is %s\n", localVersionStr, latestVersion)
+					fmt.Fprintf(cfg.Stderr, "Local yt-dlp version %s is outdated, latest is %s\n", localVersionStr, latestVersion)
 					shouldDownloadYTDLP = true
 				} else {
-					fmt.Fprintf(cfg.Stderr, "✅ Found yt-dlp in dependencies at %s (version %s)\n", ytDlpPath, localVersionStr)
+					fmt.Fprintf(cfg.Stderr, "Found yt-dlp in dependencies at %s (version %s)\n", ytDlpPath, localVersionStr)
 				}
 			}
 		} else {
-			fmt.Fprintf(cfg.Stderr, "✅ Found yt-dlp in dependencies at %s\n", ytDlpPath)
+			fmt.Fprintf(cfg.Stderr, "Found yt-dlp in dependencies at %s\n", ytDlpPath)
 		}
 	} else {
-		fmt.Fprintf(cfg.Stderr, "✅ Found yt-dlp in system PATH\n")
+		fmt.Fprintf(cfg.Stderr, "Found yt-dlp in system PATH\n")
 	}
 
 	if shouldDownloadYTDLP {
-		fmt.Fprintf(cfg.Stderr, "⬇️ Downloading yt-dlp from GitHub...\n")
+		fmt.Fprintf(cfg.Stderr, "Downloading yt-dlp from GitHub...\n")
 		if client == nil {
 			client = github.NewClient(nil)
 		}
@@ -134,7 +134,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 			return nil, fmt.Errorf("failed to download yt-dlp: HTTP status %s", resp.Status)
 		}
 		if err := os.Remove(ytDlpPath); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to remove outdated yt-dlp: %v\n", err)
+			fmt.Fprintf(cfg.Stderr, "Warning: Failed to remove outdated yt-dlp: %v\n", err)
 		}
 		out, err := os.Create(ytDlpPath)
 		if err != nil {
@@ -150,7 +150,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 				return nil, fmt.Errorf("failed to set permissions for yt-dlp: %v", err)
 			}
 		}
-		fmt.Fprintf(cfg.Stderr, "✅ Downloaded yt-dlp to %s\n", ytDlpPath)
+		fmt.Fprintf(cfg.Stderr, "Downloaded yt-dlp to %s\n", ytDlpPath)
 	}
 
 	// Check and download aria2
@@ -168,12 +168,12 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 			cmd := exec.Command(aria2Path, "--version")
 			localVersion, err := cmd.Output()
 			if err != nil {
-				fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to check aria2 version: %v\n", err)
+				fmt.Fprintf(cfg.Stderr, "Warning: Failed to check aria2 version: %v\n", err)
 				shouldDownloadAria2 = true
 			} else {
 				release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
 				if err != nil {
-					fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to fetch aria2 release: %v\n", err)
+					fmt.Fprintf(cfg.Stderr, "Warning: Failed to fetch aria2 release: %v\n", err)
 					cfg.UseAria2c = false
 				} else {
 					latestVersion := strings.TrimPrefix(release.GetTagName(), "release-")
@@ -182,31 +182,31 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 						localVersionStr = strings.Split(localVersionStr, " ")[1]
 					}
 					if localVersionStr != latestVersion {
-						fmt.Fprintf(cfg.Stderr, "ℹ️ Local aria2 version %s is outdated, latest is %s\n", localVersionStr, latestVersion)
+						fmt.Fprintf(cfg.Stderr, "Local aria2 version %s is outdated, latest is %s\n", localVersionStr, latestVersion)
 						shouldDownloadAria2 = true
 					} else {
-						fmt.Fprintf(cfg.Stderr, "✅ Found aria2 in dependencies at %s (version %s)\n", aria2Path, localVersionStr)
+						fmt.Fprintf(cfg.Stderr, "Found aria2 in dependencies at %s (version %s)\n", aria2Path, localVersionStr)
 						cfg.UseAria2c = true
 					}
 				}
 			}
 		} else {
-			fmt.Fprintf(cfg.Stderr, "✅ Found aria2 in dependencies at %s\n", aria2Path)
+			fmt.Fprintf(cfg.Stderr, "Found aria2 in dependencies at %s\n", aria2Path)
 			cfg.UseAria2c = true
 		}
 	} else {
-		fmt.Fprintf(cfg.Stderr, "✅ Found aria2 in system PATH\n")
+		fmt.Fprintf(cfg.Stderr, "Found aria2 in system PATH\n")
 		cfg.UseAria2c = true
 	}
 
 	if shouldDownloadAria2 {
-		fmt.Fprintf(cfg.Stderr, "⬇️ Downloading aria2 from GitHub...\n")
+		fmt.Fprintf(cfg.Stderr, "Downloading aria2 from GitHub...\n")
 		if client == nil {
 			client = github.NewClient(nil)
 		}
 		release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
 		if err != nil {
-			fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to fetch aria2 release: %v\n", err)
+			fmt.Fprintf(cfg.Stderr, "Warning: Failed to fetch aria2 release: %v\n", err)
 			cfg.UseAria2c = false
 		} else {
 			assetPattern := fmt.Sprintf("aria2-[0-9.]+-%s-%s", runtime.GOOS, runtime.GOARCH)
@@ -218,42 +218,42 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 				}
 			}
 			if downloadURL == "" {
-				fmt.Fprintf(cfg.Stderr, "⚠️ Warning: No suitable aria2 binary found\n")
+				fmt.Fprintf(cfg.Stderr, "Warning: No suitable aria2 binary found\n")
 				cfg.UseAria2c = false
 			} else {
 				resp, err := http.Get(downloadURL)
 				if err != nil {
-					fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to download aria2: %v\n", err)
+					fmt.Fprintf(cfg.Stderr, "Warning: Failed to download aria2: %v\n", err)
 					cfg.UseAria2c = false
 				} else {
 					defer resp.Body.Close()
 					if resp.StatusCode != http.StatusOK {
-						fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to download aria2: HTTP status %s\n", resp.Status)
+						fmt.Fprintf(cfg.Stderr, "Warning: Failed to download aria2: HTTP status %s\n", resp.Status)
 						cfg.UseAria2c = false
 					} else {
 						if err := os.Remove(aria2Path); err != nil && !os.IsNotExist(err) {
-							fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to remove outdated aria2: %v\n", err)
+							fmt.Fprintf(cfg.Stderr, "Warning: Failed to remove outdated aria2: %v\n", err)
 						}
 						out, err := os.Create(aria2Path)
 						if err != nil {
-							fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to create aria2 binary: %v\n", err)
+							fmt.Fprintf(cfg.Stderr, "Warning: Failed to create aria2 binary: %v\n", err)
 							cfg.UseAria2c = false
 						} else {
 							_, err = io.Copy(out, resp.Body)
 							out.Close()
 							if err != nil {
-								fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to save aria2: %v\n", err)
+								fmt.Fprintf(cfg.Stderr, "Warning: Failed to save aria2: %v\n", err)
 								cfg.UseAria2c = false
 							} else if runtime.GOOS != "windows" {
 								if err := os.Chmod(aria2Path, 0755); err != nil {
-									fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to set permissions for aria2: %v\n", err)
+									fmt.Fprintf(cfg.Stderr, "Warning: Failed to set permissions for aria2: %v\n", err)
 									cfg.UseAria2c = false
 								} else {
-									fmt.Fprintf(cfg.Stderr, "✅ Downloaded aria2 to %s\n", aria2Path)
+									fmt.Fprintf(cfg.Stderr, "Downloaded aria2 to %s\n", aria2Path)
 									cfg.UseAria2c = true
 								}
 							} else {
-								fmt.Fprintf(cfg.Stderr, "✅ Downloaded aria2 to %s\n", aria2Path)
+								fmt.Fprintf(cfg.Stderr, "Downloaded aria2 to %s\n", aria2Path)
 								cfg.UseAria2c = true
 							}
 						}
@@ -266,7 +266,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	// Update last_check timestamp if versions were checked
 	if shouldCheckVersions {
 		if f, err := os.Create(lastCheckFile); err != nil {
-			fmt.Fprintf(cfg.Stderr, "⚠️ Warning: Failed to update last_check timestamp: %v\n", err)
+			fmt.Fprintf(cfg.Stderr, "Warning: Failed to update last_check timestamp: %v\n", err)
 		} else {
 			f.Close()
 		}
@@ -290,6 +290,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 }
 
 // readFile reads the content of a file
+/*
 func readFile(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -297,6 +298,7 @@ func readFile(path string) string {
 	}
 	return string(data)
 }
+*/
 
 // GetMetadata fetches playlist info and video title in one command
 func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {

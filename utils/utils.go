@@ -91,3 +91,12 @@ func SplitN(s, sep string, n int) []string {
 func ParseInt(s string) (int, error) {
 	return strconv.Atoi(s)
 }
+
+// MustParseInt converts a string to int, panicking on error
+func MustParseInt(s string) int {
+	i, err := strconv.Atoi(s)
+	if err != nil {
+		panic(fmt.Sprintf("failed to parse int: %s", s))
+	}
+	return i
+}
