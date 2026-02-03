@@ -12,7 +12,7 @@ import (
 	"unicode"
 )
 
-// SanitizeFilename cleans a filename
+// Cleans a filename
 func SanitizeFilename(name string) string {
 	invalidChars := regexp.MustCompile(`[<>:"/\\|?*]`)
 	name = invalidChars.ReplaceAllString(name, "_")
@@ -28,31 +28,31 @@ func SanitizeFilename(name string) string {
 	return name
 }
 
-// GenerateTempDirName creates a timestamped directory name
+// Creates a timestamped directory name
 func GenerateTempDirName(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, time.Now().Unix())
 }
 
-// CreateUniqueTempDir ensures a unique temporary directory
+// Ensures a unique temporary directory
 func CreateUniqueTempDir(baseDir string) (string, error) {
 	tempDir := baseDir
 	counter := 1
 	for {
 		if _, err := os.Stat(tempDir); errors.Is(err, os.ErrNotExist) {
-			return tempDir, os.MkdirAll(tempDir, 0755)
+			return tempDir, os.MkdirAll(tempDir, 0o755)
 		}
 		tempDir = fmt.Sprintf("%s_%d", baseDir, counter)
 		counter++
 	}
 }
 
-// FileExists checks if a file exists
+// Checks if a file exists
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !errors.Is(err, os.ErrNotExist)
 }
 
-// MoveFile moves a file with overwrite protection
+// Moves a file with overwrite protection
 func MoveFile(src, dest string) error {
 	if FileExists(dest) {
 		return errors.New("destination file already exists")
@@ -60,7 +60,7 @@ func MoveFile(src, dest string) error {
 	return os.Rename(src, dest)
 }
 
-// FindVideoFile locates the first video file in a directory
+// Locates the first video file in a directory
 func FindVideoFile(dir string) (string, error) {
 	var videoFile string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -82,21 +82,21 @@ func FindVideoFile(dir string) (string, error) {
 	return videoFile, nil
 }
 
-// SplitN splits a string with a separator
+// Splits a string with a separator
 func SplitN(s, sep string, n int) []string {
 	return strings.SplitN(s, sep, n)
 }
 
-// ParseInt converts a string to an integer
+// Converts a string to an integer
 func ParseInt(s string) (int, error) {
 	return strconv.Atoi(s)
 }
 
-// MustParseInt converts a string to int, panicking on error
+// Converts a string to int, returning 0 on error
 func MustParseInt(s string) int {
 	i, err := strconv.Atoi(s)
 	if err != nil {
-		panic(fmt.Sprintf("failed to parse int: %s", s))
+		return 0
 	}
 	return i
 }

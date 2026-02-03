@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
 	"yaria/config"
 	"yaria/downloader"
 	"yaria/logger"
@@ -39,7 +40,7 @@ func main() {
 		exePath, _ = os.Getwd()
 	}
 	depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
-	if err := os.MkdirAll(depsDir, 0755); err != nil {
+	if err := os.MkdirAll(depsDir, 0o755); err != nil {
 		log.Error("Error: Failed to create dependencies directory: %v", err)
 		os.Exit(1)
 	}
@@ -92,7 +93,7 @@ func main() {
 				os.Exit(1)
 			}
 			if runtime.GOOS != "windows" {
-				if err := os.Chmod(ytDlpPath, 0755); err != nil {
+				if err := os.Chmod(ytDlpPath, 0o755); err != nil {
 					log.Error("Error: Failed to set permissions for yt-dlp: %v", err)
 					os.Exit(1)
 				}
@@ -153,7 +154,7 @@ func main() {
 									log.Warn("Warning: Failed to save aria2: %v", err)
 									cfg.UseAria2c = false
 								} else if runtime.GOOS != "windows" {
-									if err := os.Chmod(aria2Path, 0755); err != nil {
+									if err := os.Chmod(aria2Path, 0o755); err != nil {
 										log.Warn("Warning: Failed to set permissions for aria2: %v", err)
 										cfg.UseAria2c = false
 									} else {
@@ -202,25 +203,83 @@ func main() {
 
 	var url string
 
-	// SINGLE TUI RUN
+	var playlistInfo, videoTitle string
+
+	// SINGLE TUI RUN - Run TUI twice: first for selection, then for download
 	if len(args) == 0 {
-		// Run TUI to get URL, format, and resolution in one go
+		// First run: Get URL, format, and resolution
 		if err := tuiInstance.Run("", ""); err != nil {
 			log.Error("Error: Failed to run TUI: %v", err)
 			os.Exit(1)
 		}
-		if !tuiInstance.Confirmed || tuiInstance.URL == "" {
-			log.Info("No URL provided or download cancelled")
+		// Check if TUI exited with an error message or user cancelled
+		if tuiInstance.URL == "" {
+			os.Exit(0)
+		}
+		if !tuiInstance.Confirmed {
+			log.Info("Download cancelled")
 			os.Exit(0)
 		}
 		url = tuiInstance.URL
 		args = []string{url}
-	} else {
-		url = args[0]
+		// Use metadata already fetched by TUI
+		playlistInfo = tuiInstance.PlaylistInfo
+		videoTitle = tuiInstance.Title
+		// If playlistInfo is empty, TUI exited with error
+		if playlistInfo == "" {
+			os.Exit(0)
+		}
+
+		// Determine playlist or single video
+		parts := utils.SplitN(playlistInfo, "&", 3)
+		if len(parts) < 3 {
+			log.Error("Error: Invalid metadata format")
+			os.Exit(1)
+		}
+		isPlaylist := parts[0]
+		playlistTitle := parts[1]
+		playlistCountStr := parts[2]
+
+		isSingleVideo := isPlaylist == "NA" || utils.MustParseInt(playlistCountStr) <= 1
+
+		// Generate final name
+		var finalName string
+		if isSingleVideo {
+			finalName = utils.SanitizeFilename(videoTitle)
+			if finalName == "" {
+				finalName = utils.GenerateTempDirName("Video")
+			}
+		} else {
+			finalName = utils.SanitizeFilename(playlistTitle)
+			if finalName == "" {
+				finalName = utils.GenerateTempDirName("Playlist")
+			}
+		}
+
+		// Create unique temp directory
+		tempDir, err := utils.CreateUniqueTempDir(finalName)
+		if err != nil {
+			log.Error("Failed to create directory: %s: %v", tempDir, err)
+			os.Exit(1)
+		}
+
+		// Set download parameters in TUI
+		tuiInstance.TempDir = tempDir
+		tuiInstance.Args = args
+
+		// Second run: Show download progress in TUI (skip confirmation)
+		if err := tuiInstance.RunDownloadOnly(); err != nil {
+			log.Error("Error: Failed to run TUI download: %v", err)
+			os.Exit(1)
+		}
+
+		// TUI handled everything including download
+		os.Exit(0)
 	}
 
-	// Fetch metadata
-	playlistInfo, videoTitle, err := dl.GetMetadata(args)
+	// CLI MODE - fetch metadata and download
+	url = args[0]
+	playlistInfo, videoTitle, err = dl.GetMetadata(args)
 	if err != nil {
 		log.Error("Error: Failed to fetch metadata: %v", err)
 		os.Exit(1)
@@ -228,6 +287,10 @@ func main() {
 
 	// Determine playlist or single video
 	parts := utils.SplitN(playlistInfo, "&", 3)
+	if len(parts) < 3 {
+		log.Error("Error: Invalid metadata format")
+		os.Exit(1)
+	}
 	isPlaylist := parts[0]
 	playlistTitle := parts[1]
 	playlistCountStr := parts[2]
@@ -266,7 +329,9 @@ func main() {
 		}
 	}()
 
-	// Download
+	// Download (CLI mode only)
+	log.Info("Starting download...")
+	fmt.Println() // Add blank line for separation
 	success, err := dl.Download(args, tempDir)
 	if err != nil {
 		log.Error("❌ Download failed: %v", err)

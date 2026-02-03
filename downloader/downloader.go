@@ -13,12 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
 	"yaria/config"
 
 	"github.com/google/go-github/v62/github"
 )
 
-// Downloader defines the interface for yt-dlp operations
+// Interface for yt-dlp operations
 type Downloader interface {
 	GetMetadata(args []string) (string, string, error)
 	GetOutputFilename(args []string, tempDir string) (string, error)
@@ -26,21 +27,21 @@ type Downloader interface {
 	Download(args []string, tempDir string) (bool, error)
 }
 
-// Format represents a video/audio format
+// Represents video/audio format
 type Format struct {
 	ID       string
 	Height   int
 	Ext      string
 	IsAudio  bool
 	Protocol string
+	FileSize string
 }
 
-// YTDLPDownloader implements the Downloader interface
+// Implements the Downloader interface
 type YTDLPDownloader struct {
 	cfg *config.Config
 }
 
-// New creates a new YTDLPDownloader
 func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	// Create dependencies folder
 	exePath, err := os.Executable()
@@ -48,7 +49,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		exePath, _ = os.Getwd() // Fallback to current directory
 	}
 	depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
-	if err := os.MkdirAll(depsDir, 0755); err != nil {
+	if err := os.MkdirAll(depsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create dependencies directory: %v", err)
 	}
 
@@ -146,7 +147,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 			return nil, fmt.Errorf("failed to save yt-dlp: %v", err)
 		}
 		if runtime.GOOS != "windows" {
-			if err := os.Chmod(ytDlpPath, 0755); err != nil {
+			if err := os.Chmod(ytDlpPath, 0o755); err != nil {
 				return nil, fmt.Errorf("failed to set permissions for yt-dlp: %v", err)
 			}
 		}
@@ -245,7 +246,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 								fmt.Fprintf(cfg.Stderr, "Warning: Failed to save aria2: %v\n", err)
 								cfg.UseAria2c = false
 							} else if runtime.GOOS != "windows" {
-								if err := os.Chmod(aria2Path, 0755); err != nil {
+								if err := os.Chmod(aria2Path, 0o755); err != nil {
 									fmt.Fprintf(cfg.Stderr, "Warning: Failed to set permissions for aria2: %v\n", err)
 									cfg.UseAria2c = false
 								} else {
@@ -300,15 +301,29 @@ func readFile(path string) string {
 }
 */
 
-// GetMetadata fetches playlist info and video title in one command
+// Fetches playlist info and video title in one command
 func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	ytDlpCmd := "yt-dlp"
 	if runtime.GOOS == "windows" {
 		ytDlpCmd = "yt-dlp.exe"
 	}
-	cmd := exec.Command(ytDlpCmd, append([]string{"--flat-playlist", "--print", "%(playlist)s&%(playlist_title)s&%(playlist_count)s&%(title)s"}, args...)...)
-	output, err := cmd.Output()
+	cmdArgs := []string{"--flat-playlist", "--print", "%(playlist)s&%(playlist_title)s&%(playlist_count)s&%(title)s"}
+	if d.cfg.CookieBrowser != "" {
+		cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
+	}
+	cmdArgs = append(cmdArgs, args...)
+	cmd := exec.Command(ytDlpCmd, cmdArgs...)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// Include stderr output in error message for better debugging
+		if len(output) > 0 {
+			errMsg := strings.TrimSpace(string(output))
+			// Limit error message length
+			if len(errMsg) > 200 {
+				errMsg = errMsg[:200] + "..."
+			}
+			return "", "", fmt.Errorf("%s", errMsg)
+		}
 		return "", "", err
 	}
 	parts := splitLines(string(output))
@@ -324,7 +339,7 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	return playlistInfo, title, nil
 }
 
-// GetOutputFilename predicts the output filename
+// Predicts the output filename
 func (d *YTDLPDownloader) GetOutputFilename(args []string, tempDir string) (string, error) {
 	ytDlpCmd := "yt-dlp"
 	if runtime.GOOS == "windows" {
@@ -342,15 +357,29 @@ func (d *YTDLPDownloader) GetOutputFilename(args []string, tempDir string) (stri
 	return "", errors.New("no filename found")
 }
 
-// GetFormats fetches available formats for a URL
+// Fetches available formats for a URL
 func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 	ytDlpCmd := "yt-dlp"
 	if runtime.GOOS == "windows" {
 		ytDlpCmd = "yt-dlp.exe"
 	}
-	cmd := exec.Command(ytDlpCmd, "--list-formats", url)
-	output, err := cmd.Output()
+	cmdArgs := []string{"--list-formats"}
+	if d.cfg.CookieBrowser != "" {
+		cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
+	}
+	cmdArgs = append(cmdArgs, url)
+	cmd := exec.Command(ytDlpCmd, cmdArgs...)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// Include stderr output in error message for better debugging
+		if len(output) > 0 {
+			errMsg := strings.TrimSpace(string(output))
+			// Limit error message length
+			if len(errMsg) > 200 {
+				errMsg = errMsg[:200] + "..."
+			}
+			return nil, fmt.Errorf("%s", errMsg)
+		}
 		return nil, err
 	}
 
@@ -367,10 +396,14 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 			height := 0
 			ext := ""
 			protocol := ""
+			fileSize := ""
 			for _, field := range fields {
 				if strings.Contains(field, "x") && !isAudio {
-					if res, err := strconv.Atoi(strings.Split(field, "x")[1]); err == nil {
-						height = res
+					parts := strings.Split(field, "x")
+					if len(parts) >= 2 {
+						if res, err := strconv.Atoi(parts[1]); err == nil {
+							height = res
+						}
 					}
 				}
 				if strings.Contains(field, "mp4") || strings.Contains(field, "webm") || strings.Contains(field, "m4a") || strings.Contains(field, "mp3") {
@@ -378,6 +411,15 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 				}
 				if strings.Contains(field, "http") || strings.Contains(field, "m3u8") {
 					protocol = field
+				}
+				// Parse file size
+				if strings.Contains(field, "iB") || strings.Contains(field, "B") {
+					if len(field) > 2 && (field[len(field)-2:] == "iB" || field[len(field)-1:] == "B") {
+						// Check if it's a valid size (starts with number)
+						if len(field) > 0 && (field[0] >= '0' && field[0] <= '9') {
+							fileSize = field
+						}
+					}
 				}
 			}
 			// Include formats with m3u8 as a fallback, prioritize http
@@ -388,27 +430,62 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 					Ext:      ext,
 					IsAudio:  isAudio,
 					Protocol: protocol,
+					FileSize: fileSize,
 				})
 			}
 		}
 	}
-	// Sort formats to prioritize http over m3u8
-	sortedFormats := make([]Format, 0, len(formats))
-	httpFormats := make([]Format, 0)
-	m3u8Formats := make([]Format, 0)
+	// Deduplicate and filter formats - keep only the best format for each resolution
+	uniqueFormats := make(map[int]Format) // map[height]bestFormat
+
 	for _, f := range formats {
-		if f.Protocol == "http" || f.Protocol == "" {
-			httpFormats = append(httpFormats, f)
-		} else {
-			m3u8Formats = append(m3u8Formats, f)
+		if f.IsAudio {
+			continue // Skip audio formats in video selection
+		}
+
+		existing, exists := uniqueFormats[f.Height]
+		if !exists {
+			uniqueFormats[f.Height] = f
+			continue
+		}
+
+		// Prioritize: mp4 > webm, http > m3u8
+		shouldReplace := false
+
+		// Prefer mp4 over webm
+		if f.Ext == "mp4" && existing.Ext != "mp4" {
+			shouldReplace = true
+		} else if f.Ext == existing.Ext {
+			// Same extension, prefer http over m3u8
+			if (f.Protocol == "http" || f.Protocol == "") && existing.Protocol != "http" && existing.Protocol != "" {
+				shouldReplace = true
+			}
+		}
+
+		if shouldReplace {
+			uniqueFormats[f.Height] = f
 		}
 	}
-	sortedFormats = append(sortedFormats, httpFormats...)
-	sortedFormats = append(sortedFormats, m3u8Formats...)
+
+	// Convert map to sorted slice (highest resolution first)
+	sortedFormats := make([]Format, 0, len(uniqueFormats))
+	for _, f := range uniqueFormats {
+		sortedFormats = append(sortedFormats, f)
+	}
+
+	// Sort by height descending
+	for i := 0; i < len(sortedFormats)-1; i++ {
+		for j := i + 1; j < len(sortedFormats); j++ {
+			if sortedFormats[i].Height < sortedFormats[j].Height {
+				sortedFormats[i], sortedFormats[j] = sortedFormats[j], sortedFormats[i]
+			}
+		}
+	}
+
 	return sortedFormats, nil
 }
 
-// Download executes the download process with retries and fallback
+// Executes the download process with retries and fallback
 func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) {
 	ytDlpCmd := "yt-dlp"
 	if runtime.GOOS == "windows" {
@@ -420,20 +497,24 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			"--geo-bypass",
 			"--no-check-certificate",
 			"--concurrent-fragments", "16",
-			"--downloader", "aria2c",
-			"--downloader-args", "aria2c:--max-connection-per-server=16 --split=16 --max-concurrent-downloads=16",
+			"--no-warnings",
+			"--progress",
+			"--newline",
 			"--output", tempDir + "/" + d.cfg.OutputTemplate,
+		}
+		if d.cfg.CookieBrowser != "" {
+			cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 		}
 		if d.cfg.IsAudioOnly {
 			cmdArgs = append(cmdArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
 		} else if d.cfg.Resolution != "" {
-			cmdArgs = append(cmdArgs, "--format", d.cfg.Resolution)
+			cmdArgs = append(cmdArgs, "--format", d.cfg.Resolution+"+bestaudio/best")
 		} else {
 			cmdArgs = append(cmdArgs, "--format", "bestvideo+bestaudio/best")
 		}
 		cmdArgs = append(cmdArgs, args...)
 
-		if d.cfg.UseAria2c && attempt <= 2 {
+		if d.cfg.UseAria2c {
 			aria2Cmd := "aria2c"
 			if runtime.GOOS == "windows" {
 				aria2Cmd = "aria2c.exe"
@@ -456,7 +537,13 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 					"--geo-bypass",
 					"--no-check-certificate",
 					"--concurrent-fragments", "16",
+					"--no-warnings",
+					"--progress",
+					"--newline",
 					"--output", tempDir + "/" + d.cfg.OutputTemplate,
+				}
+				if d.cfg.CookieBrowser != "" {
+					fallbackArgs = append(fallbackArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 				}
 				if d.cfg.IsAudioOnly {
 					fallbackArgs = append(fallbackArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
@@ -486,7 +573,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 	return false, errors.New("all download attempts failed, including fallback")
 }
 
-// splitLines splits a string into lines and trims whitespace
+// Splits a string into lines and trims whitespace
 func splitLines(s string) []string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	for i, line := range lines {

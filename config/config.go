@@ -19,6 +19,7 @@ type Config struct {
 	IsAudioOnly    bool
 	AudioFormat    string
 	Resolution     string
+	CookieBrowser  string
 }
 
 // Config with default values
@@ -34,10 +35,11 @@ func New() *Config {
 		IsAudioOnly:    false,
 		AudioFormat:    "mp3",
 		Resolution:     "",
+		CookieBrowser:  "",
 	}
 }
 
-// WaitBeforeRetry logs and waits before retrying
+// Logs and waits before retrying
 func (c *Config) WaitBeforeRetry(attempt int) {
 	fmt.Fprintf(c.Stdout, "Waiting %v before retrying...\n", c.RetryDelay)
 	time.Sleep(c.RetryDelay)
