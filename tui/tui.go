@@ -48,6 +48,7 @@ type Model struct {
 	cursor            int
 	choices           []string
 	Confirmed         bool
+	rainbowOffset     int // For rainbow animation
 	URL               string
 	urlInput          string
 	loadingStart      time.Time
@@ -87,9 +88,10 @@ func splitCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 
 func New(cfg *config.Config, log logger.Logger) *Model {
 	return &Model{
-		cfg:   cfg,
-		log:   log,
-		state: urlState,
+		cfg:           cfg,
+		log:           log,
+		state:         urlState,
+		rainbowOffset: 0,
 		choices: []string{
 			"Video (with audio)",
 			"Audio only",
@@ -163,7 +165,23 @@ type downloadCompleteMsg struct {
 	err     error
 }
 
+type rainbowAnimMsg struct{}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle rainbow animation
+	switch msg.(type) {
+	case tea.WindowSizeMsg:
+		return m, func() tea.Msg { return rainbowAnimMsg{} }
+	case rainbowAnimMsg:
+		m.rainbowOffset = (m.rainbowOffset + 5) % 360
+		return m, tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg { return rainbowAnimMsg{} })
+	}
+
+	// Start animation on first update if not already started
+	if m.rainbowOffset == 0 {
+		return m, func() tea.Msg { return rainbowAnimMsg{} }
+	}
+
 	switch m.state {
 	case urlState:
 		return m.updateURL(msg)
@@ -756,23 +774,50 @@ func (m *Model) updateDownloadComplete(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func getTerminalSize() (width, height int) {
-	if w, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && w > 0 {
-		width = w
+// getTerminalSize returns the terminal dimensions
+func getTerminalSize() (int, int) {
+	w, h, _ := term.GetSize(int(os.Stdout.Fd()))
+	if w == 0 {
+		return 80, 24
 	}
-	if h, err := strconv.Atoi(os.Getenv("LINES")); err == nil && h > 0 {
-		height = h
+	return w, h
+}
+
+// rainbowColor generates RGB colors for rainbow animation
+func rainbowColor(offset int) string {
+	// HSV to RGB conversion for rainbow effect
+	hue := float64(offset%360) / 360.0
+
+	// Convert HSV to RGB
+	r, g, b := hsvToRGB(hue, 1.0, 1.0)
+
+	// Convert to ANSI 256 color (using true color if supported)
+	return fmt.Sprintf("#%02x%02x%02x", int(r*255), int(g*255), int(b*255))
+}
+
+// hsvToRGB converts HSV color space to RGB
+func hsvToRGB(h, s, v float64) (r, g, b float64) {
+	i := int(h * 6)
+	f := h*6 - float64(i)
+	p := v * (1 - s)
+	q := v * (1 - f*s)
+	t := v * (1 - (1-f)*s)
+
+	switch i % 6 {
+	case 0:
+		r, g, b = v, t, p
+	case 1:
+		r, g, b = q, v, p
+	case 2:
+		r, g, b = p, v, t
+	case 3:
+		r, g, b = p, q, v
+	case 4:
+		r, g, b = t, p, v
+	case 5:
+		r, g, b = v, p, q
 	}
-	if w, h2, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
-		width, height = w, h2
-	}
-	if width == 0 {
-		width = 80
-	}
-	if height == 0 {
-		height = 24
-	}
-	return
+	return r, g, b
 }
 
 func (m *Model) View() string {
@@ -787,11 +832,27 @@ func (m *Model) View() string {
 		maxContentWidth = 80
 	}
 
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).PaddingBottom(1).Align(lipgloss.Center).Width(maxContentWidth)
+	// Create rainbow border styles
+	rainbowBorderColor := lipgloss.Color(rainbowColor(m.rainbowOffset))
+	rainbowBorderColor2 := lipgloss.Color(rainbowColor(m.rainbowOffset + 60))
+	rainbowBorderColor3 := lipgloss.Color(rainbowColor(m.rainbowOffset + 120))
+
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(rainbowBorderColor).PaddingBottom(1).Align(lipgloss.Center).Width(maxContentWidth)
 	choiceStyle := lipgloss.NewStyle().PaddingLeft(2).Width(maxContentWidth)
-	selectedStyle := lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("212")).Bold(true).Width(maxContentWidth)
-	inputStyle := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).MarginTop(1).Width(maxContentWidth - 4)
-	panelStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).Width(maxContentWidth + 6)
+	selectedStyle := lipgloss.NewStyle().PaddingLeft(2).Foreground(rainbowBorderColor2).Bold(true).Width(maxContentWidth)
+	inputStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(rainbowBorderColor).
+		BorderBackground(lipgloss.Color("")).
+		Padding(0, 1).
+		MarginTop(1).
+		Width(maxContentWidth - 4)
+	panelStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(rainbowBorderColor3).
+		BorderBackground(lipgloss.Color("")).
+		Padding(1, 2).
+		Width(maxContentWidth + 6)
 	footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Align(lipgloss.Center).Width(maxContentWidth)
 
 	var mainContent strings.Builder
