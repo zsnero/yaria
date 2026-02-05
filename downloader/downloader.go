@@ -443,7 +443,23 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		return "", "", fmt.Errorf("Failed to execute yt-dlp: %v", err)
 	}
 
-	title := strings.TrimSpace(string(titleOutput))
+	// Parse title output, filtering out error/warning lines
+	lines := strings.Split(string(titleOutput), "\n")
+	var title string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip empty lines and lines that are clearly errors/warnings
+		if trimmed == "" ||
+			strings.HasPrefix(trimmed, "ERROR:") ||
+			strings.HasPrefix(trimmed, "WARNING:") ||
+			strings.HasPrefix(trimmed, "[") {
+			continue
+		}
+		// First non-error line is the title
+		title = trimmed
+		break
+	}
+
 	if title == "" {
 		return "", "", errors.New("no title found")
 	}
@@ -650,6 +666,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			"--newline",
 			"--extractor-retries", "2",
 			"--fragment-retries", "3",
+			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 			"--output", tempDir + "/" + d.cfg.OutputTemplate,
 		}
 		if d.cfg.CookieBrowser != "" {

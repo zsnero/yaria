@@ -517,6 +517,9 @@ func (m *Model) runDownload() {
 		cmdArgs = append(cmdArgs, "--cookies-from-browser", m.cfg.CookieBrowser)
 	}
 
+	// Add user-agent to avoid bot detection
+	cmdArgs = append(cmdArgs, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 	if m.cfg.IsAudioOnly {
 		cmdArgs = append(cmdArgs, "--extract-audio", "--audio-format", m.cfg.AudioFormat)
 	} else {
