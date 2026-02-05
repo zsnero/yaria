@@ -307,6 +307,7 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	if runtime.GOOS == "windows" {
 		ytDlpCmd = "yt-dlp.exe"
 	}
+
 	cmdArgs := []string{"--flat-playlist", "--print", "%(playlist)s&%(playlist_title)s&%(playlist_count)s&%(title)s"}
 	if d.cfg.CookieBrowser != "" {
 		cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
@@ -318,13 +319,28 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		// Include stderr output in error message for better debugging
 		if len(output) > 0 {
 			errMsg := strings.TrimSpace(string(output))
+
+			// Provide helpful hints for common errors
+			if strings.Contains(errMsg, "Unsupported URL") {
+				return "", "", fmt.Errorf("Invalid or unsupported URL. Please check the URL and try again")
+			}
+			if strings.Contains(errMsg, "Video unavailable") {
+				return "", "", fmt.Errorf("Video is unavailable (may be private, deleted, or region-locked)")
+			}
+			if strings.Contains(errMsg, "Sign in") || strings.Contains(errMsg, "age") {
+				return "", "", fmt.Errorf("Age-restricted video. Browser cookies will be requested")
+			}
+			if strings.Contains(errMsg, "HTTP Error 429") {
+				return "", "", fmt.Errorf("Rate limited by YouTube. Please try again later or use --cookies-from-browser")
+			}
+
 			// Limit error message length
-			if len(errMsg) > 200 {
-				errMsg = errMsg[:200] + "..."
+			if len(errMsg) > 300 {
+				errMsg = errMsg[:300] + "..."
 			}
 			return "", "", fmt.Errorf("%s", errMsg)
 		}
-		return "", "", err
+		return "", "", fmt.Errorf("Failed to execute yt-dlp: %v. Make sure yt-dlp is installed and accessible", err)
 	}
 	parts := splitLines(string(output))
 	if len(parts) == 0 {
