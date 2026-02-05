@@ -308,7 +308,11 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		ytDlpCmd = "yt-dlp.exe"
 	}
 
-	cmdArgs := []string{"--flat-playlist", "--print", "%(playlist)s&%(playlist_title)s&%(playlist_count)s&%(title)s"}
+	cmdArgs := []string{
+		"--flat-playlist",
+		"--no-warnings",
+		"--print", "%(playlist)s&%(playlist_title)s&%(playlist_count)s&%(title)s",
+	}
 	if d.cfg.CookieBrowser != "" {
 		cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 	}
@@ -346,12 +350,64 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	if len(parts) == 0 {
 		return "", "", errors.New("no metadata found")
 	}
-	metadata := strings.SplitN(parts[0], "&", 4)
-	if len(metadata) < 4 {
-		return "", "", errors.New("incomplete metadata")
+
+	// Find the first valid metadata line (should have exactly 3 '&' separators)
+	var line string
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		// Skip lines that are clearly not metadata
+		if strings.HasPrefix(trimmed, "WARNING:") ||
+			strings.HasPrefix(trimmed, "ERROR:") ||
+			strings.Contains(trimmed, "JsChallengeRequest") ||
+			strings.Contains(trimmed, "requests = [") {
+			continue
+		}
+		// Valid metadata should have exactly 3 '&' characters
+		if strings.Count(trimmed, "&") == 3 {
+			line = trimmed
+			break
+		}
 	}
-	playlistInfo := strings.Join(metadata[:3], "&")
+
+	if line == "" {
+		// Show first few lines for debugging
+		maxLines := 3
+		if len(parts) < maxLines {
+			maxLines = len(parts)
+		}
+		debugOutput := strings.Join(parts[:maxLines], " | ")
+		if len(debugOutput) > 200 {
+			debugOutput = debugOutput[:200] + "..."
+		}
+		return "", "", fmt.Errorf("no valid metadata found in output. First lines: %s", debugOutput)
+	}
+
+	metadata := strings.SplitN(line, "&", 4)
+
+	// Debug: show what we received if parsing fails
+	if len(metadata) < 4 {
+		return "", "", fmt.Errorf("incomplete metadata (got %d fields, expected 4). Raw output: %s", len(metadata), line)
+	}
+
+	// Handle cases where playlist fields might be "NA" or empty for single videos
+	playlist := metadata[0]
+	playlistTitle := metadata[1]
+	playlistCount := metadata[2]
 	title := metadata[3]
+
+	// For single videos, normalize playlist info
+	if playlist == "NA" || playlist == "" {
+		playlist = "NA"
+		playlistTitle = "NA"
+		if playlistCount == "" {
+			playlistCount = "1"
+		}
+	}
+
+	playlistInfo := fmt.Sprintf("%s&%s&%s", playlist, playlistTitle, playlistCount)
 	return playlistInfo, title, nil
 }
 
