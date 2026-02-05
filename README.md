@@ -6,8 +6,9 @@ Zip through video and audio downloads from tons of sites with yt-dlp's versatili
 **None!** The app automatically downloads and manages its own dependencies:
 - **yt-dlp** - Auto-downloaded from GitHub on first run
 - **aria2c** - Auto-downloaded from GitHub on first run (optional, for faster downloads)
+- **deno** - Auto-downloaded from GitHub on first run (for bypassing YouTube's JavaScript challenges)
 
-Both are automatically updated every 24 hours if outdated.
+All dependencies are automatically updated every 24 hours if outdated.
 
 ## Installation
 

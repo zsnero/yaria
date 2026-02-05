@@ -258,9 +258,10 @@ func (m *Model) updateMetadataLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// Check if error is due to age restriction
 			errStr := msg.err.Error()
-			if strings.Contains(errStr, "Sign in to confirm") || strings.Contains(errStr, "age") {
-				// Only try browser detection if we haven't already
+			if strings.Contains(errStr, "Sign in to confirm") || strings.Contains(errStr, "Age-restricted") {
+				// If we haven't tried with browser cookies yet, start browser detection
 				if !m.needsBrowser && m.cfg.CookieBrowser == "" {
+					m.needsBrowser = true
 					// Start async browser detection
 					return m, m.detectBrowsersAsync()
 				}
@@ -282,22 +283,7 @@ func (m *Model) updateMetadataLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorMsg = "Age-restricted video. No supported browsers found for authentication."
 			return m, tea.Quit
 		}
-		// Check if firefox is available
-		for _, browser := range m.availableBrowsers {
-			if browser == "firefox" {
-				m.cfg.CookieBrowser = "firefox"
-				m.needsBrowser = true
-				// Retry metadata fetch with browser cookies
-				m.loadingStart = time.Now()
-				return m, tea.Batch(
-					m.fetchMetadata(),
-					tea.Tick(time.Millisecond*500, func(t time.Time) tea.Msg {
-						return tickMsg{}
-					}),
-				)
-			}
-		}
-		// Firefox not found, show browser selection
+		// Show browser selection screen so user can choose which browser they're logged into
 		m.state = browserSelectionState
 		m.cursor = 0
 		m.choices = m.availableBrowsers
@@ -516,10 +502,14 @@ func (m *Model) runDownload() {
 		"--no-overwrites",
 		"--geo-bypass",
 		"--no-check-certificate",
-		"--concurrent-fragments", "16",
+		"--concurrent-fragments", "32",
+		"--buffer-size", "64K",
+		"--http-chunk-size", "10M",
 		"--newline",
 		"--progress",
 		"--no-color",
+		"--extractor-retries", "2",
+		"--fragment-retries", "3",
 		"--output", m.TempDir + "/" + m.cfg.OutputTemplate,
 	}
 

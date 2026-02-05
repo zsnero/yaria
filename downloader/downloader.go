@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
@@ -264,6 +265,68 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		}
 	}
 
+	// Check and download deno for JavaScript challenge solving
+	denoBinary := "deno"
+	if runtime.GOOS == "windows" {
+		denoBinary = "deno.exe"
+	}
+	denoPath := filepath.Join(depsDir, denoBinary)
+	if _, err := exec.LookPath(denoBinary); err != nil {
+		if _, err := os.Stat(denoPath); err != nil {
+			fmt.Fprintf(cfg.Stderr, "Downloading deno for JavaScript challenge solving...\n")
+			// Determine platform-specific download URL
+			var denoURL string
+			switch runtime.GOOS {
+			case "linux":
+				denoURL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip"
+			case "darwin":
+				if runtime.GOARCH == "arm64" {
+					denoURL = "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip"
+				} else {
+					denoURL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip"
+				}
+			case "windows":
+				denoURL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+			default:
+				fmt.Fprintf(cfg.Stderr, "Warning: Unsupported platform for deno auto-install. JavaScript challenges may fail.\n")
+			}
+
+			if denoURL != "" {
+				resp, err := http.Get(denoURL)
+				if err != nil {
+					fmt.Fprintf(cfg.Stderr, "Warning: Failed to download deno: %v. JavaScript challenges may fail.\n", err)
+				} else {
+					defer resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						// Save zip file temporarily
+						zipPath := filepath.Join(depsDir, "deno.zip")
+						zipFile, err := os.Create(zipPath)
+						if err == nil {
+							_, err = io.Copy(zipFile, resp.Body)
+							zipFile.Close()
+							if err == nil {
+								// Extract deno binary from zip
+								if err := extractDenoFromZip(zipPath, denoPath); err != nil {
+									fmt.Fprintf(cfg.Stderr, "Warning: Failed to extract deno: %v\n", err)
+								} else {
+									os.Remove(zipPath)
+									if runtime.GOOS != "windows" {
+										os.Chmod(denoPath, 0o755)
+									}
+									fmt.Fprintf(cfg.Stderr, "Downloaded deno to %s\n", denoPath)
+								}
+							}
+						}
+					}
+				}
+			}
+		} else {
+			fmt.Fprintf(cfg.Stderr, "Found deno in dependencies at %s\n", denoPath)
+		}
+	} else {
+		fmt.Fprintf(cfg.Stderr, "Found deno in system PATH\n")
+	}
+
 	// Update last_check timestamp if versions were checked
 	if shouldCheckVersions {
 		if f, err := os.Create(lastCheckFile); err != nil {
@@ -290,6 +353,36 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	return &YTDLPDownloader{cfg: cfg}, nil
 }
 
+// extractDenoFromZip extracts the deno binary from a zip archive
+func extractDenoFromZip(zipPath, destPath string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		// Look for the deno binary (might be in root or subdirectory)
+		if strings.HasSuffix(f.Name, "deno") || strings.HasSuffix(f.Name, "deno.exe") {
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			defer rc.Close()
+
+			outFile, err := os.Create(destPath)
+			if err != nil {
+				return err
+			}
+			defer outFile.Close()
+
+			_, err = io.Copy(outFile, rc)
+			return err
+		}
+	}
+	return errors.New("deno binary not found in zip archive")
+}
+
 // readFile reads the content of a file
 /*
 func readFile(path string) string {
@@ -308,21 +401,18 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		ytDlpCmd = "yt-dlp.exe"
 	}
 
-	cmdArgs := []string{
-		"--flat-playlist",
-		"--no-warnings",
-		"--print", "%(playlist)s&%(playlist_title)s&%(playlist_count)s&%(title)s",
-	}
+	// Get title first
+	titleArgs := []string{"--get-title", "--no-warnings"}
 	if d.cfg.CookieBrowser != "" {
-		cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
+		titleArgs = append(titleArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 	}
-	cmdArgs = append(cmdArgs, args...)
-	cmd := exec.Command(ytDlpCmd, cmdArgs...)
-	output, err := cmd.CombinedOutput()
+	titleArgs = append(titleArgs, args...)
+	titleCmd := exec.Command(ytDlpCmd, titleArgs...)
+	titleOutput, err := titleCmd.CombinedOutput()
 	if err != nil {
 		// Include stderr output in error message for better debugging
-		if len(output) > 0 {
-			errMsg := strings.TrimSpace(string(output))
+		if len(titleOutput) > 0 {
+			errMsg := strings.TrimSpace(string(titleOutput))
 
 			// Provide helpful hints for common errors
 			if strings.Contains(errMsg, "Unsupported URL") {
@@ -331,11 +421,17 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 			if strings.Contains(errMsg, "Video unavailable") {
 				return "", "", fmt.Errorf("Video is unavailable (may be private, deleted, or region-locked)")
 			}
-			if strings.Contains(errMsg, "Sign in") || strings.Contains(errMsg, "age") {
+			if strings.Contains(errMsg, "Sign in") || strings.Contains(errMsg, "Age-restricted") {
+				if d.cfg.CookieBrowser != "" {
+					return "", "", fmt.Errorf("Age-restricted video. Please make sure you are logged into YouTube in %s browser", d.cfg.CookieBrowser)
+				}
 				return "", "", fmt.Errorf("Age-restricted video. Browser cookies will be requested")
 			}
 			if strings.Contains(errMsg, "HTTP Error 429") {
-				return "", "", fmt.Errorf("Rate limited by YouTube. Please try again later or use --cookies-from-browser")
+				return "", "", fmt.Errorf("Rate limited by YouTube. Please try again later")
+			}
+			if strings.Contains(errMsg, "Requested format is not available") {
+				return "", "", fmt.Errorf("Video has no downloadable formats available. This may be due to regional restrictions, DRM protection, or YouTube's anti-bot measures. Try updating yt-dlp: pip install -U yt-dlp")
 			}
 
 			// Limit error message length
@@ -344,67 +440,41 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 			}
 			return "", "", fmt.Errorf("%s", errMsg)
 		}
-		return "", "", fmt.Errorf("Failed to execute yt-dlp: %v. Make sure yt-dlp is installed and accessible", err)
-	}
-	parts := splitLines(string(output))
-	if len(parts) == 0 {
-		return "", "", errors.New("no metadata found")
+		return "", "", fmt.Errorf("Failed to execute yt-dlp: %v", err)
 	}
 
-	// Find the first valid metadata line (should have exactly 3 '&' separators)
-	var line string
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		// Skip lines that are clearly not metadata
-		if strings.HasPrefix(trimmed, "WARNING:") ||
-			strings.HasPrefix(trimmed, "ERROR:") ||
-			strings.Contains(trimmed, "JsChallengeRequest") ||
-			strings.Contains(trimmed, "requests = [") {
-			continue
-		}
-		// Valid metadata should have exactly 3 '&' characters
-		if strings.Count(trimmed, "&") == 3 {
-			line = trimmed
-			break
-		}
+	title := strings.TrimSpace(string(titleOutput))
+	if title == "" {
+		return "", "", errors.New("no title found")
 	}
 
-	if line == "" {
-		// Show first few lines for debugging
-		maxLines := 3
-		if len(parts) < maxLines {
-			maxLines = len(parts)
-		}
-		debugOutput := strings.Join(parts[:maxLines], " | ")
-		if len(debugOutput) > 200 {
-			debugOutput = debugOutput[:200] + "..."
-		}
-		return "", "", fmt.Errorf("no valid metadata found in output. First lines: %s", debugOutput)
+	// Check if it's a playlist by trying to get playlist info
+	playlistArgs := []string{"--flat-playlist", "--print", "playlist,playlist_title,playlist_count", "--no-warnings"}
+	if d.cfg.CookieBrowser != "" {
+		playlistArgs = append(playlistArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 	}
+	playlistArgs = append(playlistArgs, args...)
+	playlistCmd := exec.Command(ytDlpCmd, playlistArgs...)
+	playlistOutput, _ := playlistCmd.Output()
 
-	metadata := strings.SplitN(line, "&", 4)
+	playlistData := strings.TrimSpace(string(playlistOutput))
+	var playlist, playlistTitle, playlistCount string
 
-	// Debug: show what we received if parsing fails
-	if len(metadata) < 4 {
-		return "", "", fmt.Errorf("incomplete metadata (got %d fields, expected 4). Raw output: %s", len(metadata), line)
-	}
-
-	// Handle cases where playlist fields might be "NA" or empty for single videos
-	playlist := metadata[0]
-	playlistTitle := metadata[1]
-	playlistCount := metadata[2]
-	title := metadata[3]
-
-	// For single videos, normalize playlist info
-	if playlist == "NA" || playlist == "" {
-		playlist = "NA"
-		playlistTitle = "NA"
-		if playlistCount == "" {
+	if playlistData != "" && playlistData != "NA" {
+		parts := strings.Split(playlistData, ",")
+		if len(parts) >= 3 {
+			playlist = parts[0]
+			playlistTitle = parts[1]
+			playlistCount = parts[2]
+		} else {
+			playlist = "NA"
+			playlistTitle = "NA"
 			playlistCount = "1"
 		}
+	} else {
+		playlist = "NA"
+		playlistTitle = "NA"
+		playlistCount = "1"
 	}
 
 	playlistInfo := fmt.Sprintf("%s&%s&%s", playlist, playlistTitle, playlistCount)
@@ -435,7 +505,11 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 	if runtime.GOOS == "windows" {
 		ytDlpCmd = "yt-dlp.exe"
 	}
-	cmdArgs := []string{"--list-formats"}
+	cmdArgs := []string{
+		"--list-formats",
+		"--no-warnings",
+		"--extractor-retries", "2",
+	}
 	if d.cfg.CookieBrowser != "" {
 		cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 	}
@@ -568,10 +642,14 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			"--no-overwrites",
 			"--geo-bypass",
 			"--no-check-certificate",
-			"--concurrent-fragments", "16",
+			"--concurrent-fragments", "32",
+			"--buffer-size", "64K",
+			"--http-chunk-size", "10M",
 			"--no-warnings",
 			"--progress",
 			"--newline",
+			"--extractor-retries", "2",
+			"--fragment-retries", "3",
 			"--output", tempDir + "/" + d.cfg.OutputTemplate,
 		}
 		if d.cfg.CookieBrowser != "" {

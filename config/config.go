@@ -27,7 +27,7 @@ func New() *Config {
 	return &Config{
 		MaxRetries:     3,
 		RetryDelay:     5 * time.Second,
-		Aria2cArgs:     "--max-connection-per-server=16 --min-split-size=1M --split=16 --max-concurrent-downloads=16",
+		Aria2cArgs:     "--max-connection-per-server=16 --min-split-size=1M --split=32 --max-concurrent-downloads=16 --file-allocation=none --optimize-concurrent-downloads=true --disk-cache=64M",
 		OutputTemplate: "%(title)s.%(ext)s",
 		UseAria2c:      true,
 		Stdout:         os.Stdout,
