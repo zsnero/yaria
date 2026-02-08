@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/exec"
 	"regexp"
@@ -48,7 +49,9 @@ type Model struct {
 	cursor            int
 	choices           []string
 	Confirmed         bool
-	rainbowOffset     int // For rainbow animation
+	rainbowOffset     int    // For rainbow animation
+	currentQuote      string // Current funny quote
+	rabbitFrame       int    // Current rabbit animation frame
 	URL               string
 	urlInput          string
 	loadingStart      time.Time
@@ -92,6 +95,8 @@ func New(cfg *config.Config, log logger.Logger) *Model {
 		log:           log,
 		state:         urlState,
 		rainbowOffset: 0,
+		currentQuote:  getRandomQuote(),
+		rabbitFrame:   0,
 		choices: []string{
 			"Video (with audio)",
 			"Audio only",
@@ -167,6 +172,165 @@ type downloadCompleteMsg struct {
 
 type rainbowAnimMsg struct{}
 
+// Collection of funny quotes inspired by Minecraft splash texts
+var quotes = []string{
+	"More pixels than reality!",
+	"Download at the speed of light!",
+	"Powered by rainbows and memes",
+	"100% organic video downloader",
+	"Made with actual rainbows",
+	"Faster than a speeding bullet!",
+	"Downloads videos, makes coffee",
+	"Internet's favorite downloader",
+	"Warning: May cause addiction",
+	"Now with 200% more rainbows",
+	"Downloads cat videos exclusively",
+	"Powered by unicorn tears",
+	"Internet speed: Over 9000!",
+	"Downloads in 4K, dreams in 8K",
+	"More colors than a rainbow",
+	"Faster than your internet",
+	"Downloads everything, even your will to live",
+	"Now with extra glitter",
+	"Internet's best kept secret",
+	"Downloads faster than light",
+	"Rainbows included by default",
+	"Warning: Contains awesome",
+	"More powerful than a locomotive",
+	"Downloads videos, saves souls",
+	"Internet's chosen one",
+	"Powered by pure magic",
+	"Faster than a cheetah on steroids",
+	"Downloads everything, regrets nothing",
+	"Now with 50% more memes",
+	"Internet's favorite time waster",
+	"Downloads at warp speed",
+	"More powerful than your computer",
+	"Warning: May break the internet",
+	"Downloads videos, fixes life",
+	"Now with 100% more awesome",
+	"Internet's secret weapon",
+	"Powered by dragon fire",
+	"Faster than your WiFi bill",
+	"Downloads everything, especially your free time",
+	"Now with extra sparkles",
+	"Internet's most wanted",
+	"Downloads at the speed of memes",
+	"More powerful than a superhero",
+	"Warning: Contains unlimited entertainment",
+	"Downloads videos, makes you happy",
+	"Now with 200% more glitter",
+	"Internet's fastest downloader",
+	"Powered by pure awesomeness",
+	"Faster than your attention span",
+	"Downloads everything, even your homework",
+	"Now with 100% more rainbows",
+	"Internet's best friend",
+	"Downloads at light speed",
+	"More powerful than your mom's WiFi",
+	"Warning: May cause extreme happiness",
+	"Downloads videos, saves the day",
+	"Now with extra magic",
+	"Internet's chosen downloader",
+	"Powered by love and rainbows",
+	"Faster than your ex's text back",
+	"Downloads everything, especially cat videos",
+	"Now with 50% more sparkles",
+	"Internet's most loved",
+	"Downloads at meme speed",
+	"More powerful than a tank",
+	"Warning: Contains unlimited fun",
+	"Downloads videos, makes life better",
+	"Now with 100% more love",
+	"Internet's hero",
+	"Downloads at quantum speed",
+	"More powerful than your will to study",
+	"Warning: May break your productivity",
+	"Downloads videos, fixes boredom",
+	"Now with extra unicorns",
+	"Internet's legend",
+	"Downloads at rainbow speed",
+	"More powerful than your dad's jokes",
+	"Warning: Contains epic downloads",
+	"Downloads videos, makes dreams come true",
+	"Now with 200% more magic",
+	"Internet's champion",
+	"Powered by pure rainbows",
+	"Faster than your last relationship",
+	"Downloads everything, even your sanity",
+	"Now with 100% more unicorns",
+	"Internet's favorite child",
+	"Downloads at god speed",
+	"More powerful than your credit card",
+	"Warning: May cause addiction to downloading",
+	"Downloads videos, saves the world",
+	"Now with extra dragons",
+	"Internet's savior",
+	"Downloads at lightning speed",
+	"More powerful than your WiFi password",
+	"Warning: Contains extreme awesomeness",
+	"Downloads videos, makes legends",
+	"Now with 50% more dragons",
+	"Internet's myth",
+	"Downloads at rainbow warrior speed",
+	"More powerful than your phone battery",
+	"Warning: May break the space-time continuum",
+	"Downloads videos, creates universes",
+	"Now with 100% more dragons",
+	"Internet's deity",
+	"Downloads at infinite speed",
+	"More powerful than your imagination",
+	"Warning: Contains unlimited power",
+	"Downloads videos, becomes legendary",
+	"Now with extra phoenix tears",
+	"Internet's creator",
+	"Downloads at impossible speed",
+	"More powerful than your dreams",
+	"Warning: May bend reality",
+	"Downloads videos, transcends dimensions",
+	"Now with 200% more phoenix tears",
+	"Internet's god",
+	"Downloads at transcendental speed",
+	"More powerful than existence itself",
+	"Warning: Contains the meaning of life",
+	"Downloads videos, achieves enlightenment",
+	"Now with 100% more enlightenment",
+	"Internet's everything",
+	"Downloads at the speed of thought",
+	"More powerful than the universe",
+	"Warning: May create new realities",
+	"Downloads videos, becomes one with the code",
+	"Now with extra cosmic energy",
+	"Internet's final form",
+	"Downloads at the speed of creation",
+	"More powerful than time itself",
+	"Warning: Contains the source code of the universe",
+	"Downloads videos, becomes the download",
+	"Now with 100% cosmic power",
+}
+
+// getRandomQuote returns a random funny quote
+func getRandomQuote() string {
+	rand.Seed(time.Now().UnixNano())
+	return quotes[rand.Intn(len(quotes))]
+}
+
+// Rabbit running animation frames
+var rabbitFrames = []string{
+	"  /\\_/\\  \n ( o.o ) \n  > ^ <  ",
+	"  /\\_/\\  \n ( •.• ) \n  > ^ <  ",
+	"  /\\_/\\  \n ( o.o ) \n  > ^ <  ",
+	"  /\\_/\\  \n ( •.• ) \n  > ^ <  ",
+	"  /\\_/\\  \n ( o.o ) \n  > ^ <  ",
+	"  /\\_/\\  \n ( •.• ) \n  > ^ <  ",
+	"  /\\_/\\  \n ( o.o ) \n  > ^ <  ",
+}
+
+// getRabbitFrame returns the current rabbit animation frame
+func getRabbitFrame(frame int) string {
+	return rabbitFrames[frame%len(rabbitFrames)]
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle rainbow animation
 	switch msg.(type) {
@@ -174,6 +338,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return rainbowAnimMsg{} }
 	case rainbowAnimMsg:
 		m.rainbowOffset = (m.rainbowOffset + 5) % 360
+		m.rabbitFrame = (m.rabbitFrame + 1) % len(rabbitFrames)
 		return m, tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg { return rainbowAnimMsg{} })
 	}
 
@@ -313,7 +478,7 @@ func (m *Model) updateMetadataLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			return m, tea.Quit
 		}
 	}
@@ -324,7 +489,7 @@ func (m *Model) updateBrowserSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			return m, tea.Quit
 		case "up", "k":
 			if m.cursor > 0 {
@@ -433,7 +598,7 @@ func (m *Model) updateFormatsLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			return m, tea.Quit
 		}
 	}
@@ -756,7 +921,7 @@ func (m *Model) updateDownloading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			return m, tea.Quit
 		}
 	}
@@ -767,7 +932,9 @@ func (m *Model) updateDownloadComplete(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c", "enter":
+		case "ctrl+c":
+			return m, tea.Quit
+		case "enter":
 			return m, tea.Quit
 		}
 	}
@@ -855,6 +1022,31 @@ func (m *Model) View() string {
 		Width(maxContentWidth + 6)
 	footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Align(lipgloss.Center).Width(maxContentWidth)
 
+	// Create header styles
+	appNameStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(rainbowBorderColor).
+		Align(lipgloss.Center).
+		Width(maxContentWidth).
+		MarginTop(1).
+		MarginBottom(1)
+
+	quoteStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241")).
+		Align(lipgloss.Center).
+		Width(maxContentWidth).
+		Italic(true).
+		MarginBottom(2)
+
+	// Build the complete view
+	var content strings.Builder
+
+	// Add header with app name and quote
+	content.WriteString(appNameStyle.Render("🌈 Yaria 🌈"))
+	content.WriteString("\n")
+	content.WriteString(quoteStyle.Render(m.currentQuote))
+	content.WriteString("\n")
+
 	var mainContent strings.Builder
 	switch m.state {
 	case urlState:
@@ -884,6 +1076,14 @@ func (m *Model) View() string {
 			loadingMsg = fmt.Sprintf("Fetching video info (using %s cookies)", m.cfg.CookieBrowser)
 		}
 		mainContent.WriteString(headerStyle.Render(loadingMsg + m.loadingDots))
+		mainContent.WriteString("\n")
+		// Add rabbit animation
+		rabbitStyle := lipgloss.NewStyle().
+			Foreground(rainbowBorderColor).
+			Align(lipgloss.Center).
+			Width(maxContentWidth).
+			MarginTop(1)
+		mainContent.WriteString(rabbitStyle.Render(getRabbitFrame(m.rabbitFrame)))
 	case browserSelectionState:
 		mainContent.WriteString(headerStyle.Render("Age-restricted video - Select browser for authentication"))
 		mainContent.WriteString("\n")
@@ -897,6 +1097,14 @@ func (m *Model) View() string {
 		}
 	case formatsLoadingState:
 		mainContent.WriteString(headerStyle.Render("Fetching formats" + m.loadingDots))
+		mainContent.WriteString("\n")
+		// Add rabbit animation
+		rabbitStyle := lipgloss.NewStyle().
+			Foreground(rainbowBorderColor).
+			Align(lipgloss.Center).
+			Width(maxContentWidth).
+			MarginTop(1)
+		mainContent.WriteString(rabbitStyle.Render(getRabbitFrame(m.rabbitFrame)))
 	case resolutionState:
 		mainContent.WriteString(headerStyle.Render("Select resolution"))
 		mainContent.WriteString("\n")
@@ -957,7 +1165,7 @@ func (m *Model) View() string {
 			mainContent.WriteString(successStyle.Render("✓ Video downloaded successfully"))
 			mainContent.WriteString("\n\n")
 			infoStyle := lipgloss.NewStyle().Faint(true).Width(maxContentWidth).Align(lipgloss.Center)
-			mainContent.WriteString(infoStyle.Render("Press Enter or q to exit"))
+			mainContent.WriteString(infoStyle.Render("Press Enter or Ctrl+C to exit"))
 		} else if m.downloadError != "" {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Width(maxContentWidth).Align(lipgloss.Center)
 			mainContent.WriteString(headerStyle.Render("Download Failed"))
@@ -965,7 +1173,7 @@ func (m *Model) View() string {
 			mainContent.WriteString(errorStyle.Render("❌ " + m.downloadError))
 			mainContent.WriteString("\n\n")
 			infoStyle := lipgloss.NewStyle().Faint(true).Width(maxContentWidth).Align(lipgloss.Center)
-			mainContent.WriteString(infoStyle.Render("Press Enter or q to exit"))
+			mainContent.WriteString(infoStyle.Render("Press Enter or Ctrl+C to exit"))
 		}
 	}
 
@@ -976,9 +1184,10 @@ func (m *Model) View() string {
 		mainContent.WriteString(errorStyle.Render("❌ " + m.errorMsg))
 	}
 
+	// Combine header, main content, and footer
 	mainPanel := panelStyle.Render(mainContent.String())
-	footer := footerStyle.Render("Press q to quit")
-	combined := lipgloss.JoinVertical(lipgloss.Center, mainPanel, footer)
+	footer := footerStyle.Render("Press Ctrl+C to quit")
+	combined := lipgloss.JoinVertical(lipgloss.Center, content.String(), mainPanel, footer)
 	ui := lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, combined)
 	return ui
 }
