@@ -3,11 +3,13 @@ package tui
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"math/rand"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -31,6 +33,7 @@ const (
 	browserSelectionState
 	formatState
 	resolutionState
+	downloadLocationState
 	confirmationState
 	formatsLoadingState
 	downloadingState
@@ -49,9 +52,12 @@ type Model struct {
 	cursor            int
 	choices           []string
 	Confirmed         bool
-	rainbowOffset     int    // For rainbow animation
-	currentQuote      string // Current funny quote
-	rabbitFrame       int    // Current rabbit animation frame
+	rainbowOffset     int      // For rainbow animation
+	currentQuote      string   // Current funny quote
+	rabbitFrame       int      // Current rabbit animation frame
+	locationChoices   []string // Download location options
+	ThumbnailPath     string   // Path to downloaded thumbnail
+	IsKittyTerminal   bool     // Whether terminal supports GPU images
 	URL               string
 	urlInput          string
 	loadingStart      time.Time
@@ -90,13 +96,24 @@ func splitCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 }
 
 func New(cfg *config.Config, log logger.Logger) *Model {
+	// Detect terminal capabilities
+	isKitty := false
+	term := os.Getenv("TERM")
+	termProgram := os.Getenv("TERM_PROGRAM")
+
+	// Check for kitty terminal
+	if strings.Contains(term, "kitty") || strings.Contains(termProgram, "kitty") {
+		isKitty = true
+	}
+
 	return &Model{
-		cfg:           cfg,
-		log:           log,
-		state:         urlState,
-		rainbowOffset: 0,
-		currentQuote:  getRandomQuote(),
-		rabbitFrame:   0,
+		cfg:             cfg,
+		log:             log,
+		state:           urlState,
+		rainbowOffset:   0,
+		currentQuote:    getRandomQuote(),
+		rabbitFrame:     0,
+		IsKittyTerminal: isKitty,
 		choices: []string{
 			"Video (with audio)",
 			"Audio only",
@@ -144,9 +161,10 @@ func (m *Model) startLoading() tea.Msg {
 type tickMsg struct{}
 
 type metadataFetchedMsg struct {
-	playlistInfo string
-	title        string
-	err          error
+	playlistInfo  string
+	title         string
+	thumbnailPath string
+	err           error
 }
 
 type formatsFetchedMsg struct {
@@ -171,6 +189,10 @@ type downloadCompleteMsg struct {
 }
 
 type rainbowAnimMsg struct{}
+
+type yaziLocationSelectedMsg struct {
+	path string
+}
 
 // Collection of funny quotes inspired by Minecraft splash texts
 var quotes = []string{
@@ -358,6 +380,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateFormat(msg)
 	case resolutionState:
 		return m.updateResolution(msg)
+	case downloadLocationState:
+		return m.updateDownloadLocation(msg)
 	case confirmationState:
 		return m.updateConfirmation(msg)
 	case formatsLoadingState:
@@ -406,7 +430,21 @@ func (m *Model) updateURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) fetchMetadata() tea.Cmd {
 	return func() tea.Msg {
 		playlistInfo, title, err := m.dl.GetMetadata([]string{m.url})
-		return metadataFetchedMsg{playlistInfo: playlistInfo, title: title, err: err}
+
+		// Thumbnail extraction disabled for now
+		// var thumbnailPath string
+		// if err == nil {
+		// 	// Create temp directory for thumbnail
+		// 	tempDir := os.TempDir()
+		// 	thumbnailPath, _ = m.dl.GetThumbnail([]string{m.url}, tempDir)
+		// }
+
+		return metadataFetchedMsg{
+			playlistInfo:  playlistInfo,
+			title:         title,
+			thumbnailPath: "", // thumbnailPath,
+			err:           err,
+		}
 	}
 }
 
@@ -457,6 +495,7 @@ func (m *Model) updateMetadataLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.PlaylistInfo = msg.playlistInfo
 		m.Title = msg.title
+		m.ThumbnailPath = msg.thumbnailPath
 		m.state = formatState
 		m.cursor = 0
 		return m, nil
@@ -627,9 +666,59 @@ func (m *Model) updateResolution(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.cfg.Resolution = ""
 			}
-			m.state = confirmationState
+			m.state = downloadLocationState
 			m.cursor = 0
+			// Initialize download location choices
+			m.locationChoices = []string{
+				"📁 Choose Download Location (Browse with Yazi)",
+				"📁 Download in Current Directory",
+			}
 		}
+	}
+	return m, nil
+}
+
+func (m *Model) updateDownloadLocation(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.locationChoices)-1 {
+				m.cursor++
+			}
+		case "enter":
+			if m.cursor == 0 {
+				// Launch yazi file explorer
+				return m, m.launchYaziFileExplorer()
+			} else {
+				// Use current directory - create temp dir if not set
+				if m.TempDir == "" {
+					// Generate temp directory name from title
+					finalName := m.Title
+					if finalName == "" {
+						finalName = "Video_" + fmt.Sprintf("%d", time.Now().Unix())
+					}
+					// Create temp directory in current directory
+					cwd, _ := os.Getwd()
+					m.TempDir = filepath.Join(cwd, finalName)
+					os.MkdirAll(m.TempDir, 0o755)
+				}
+				m.cfg.DownloadLocation = ""
+				m.state = confirmationState
+				m.cursor = 0
+			}
+		}
+	case yaziLocationSelectedMsg:
+		// User selected a location with yazi
+		m.cfg.DownloadLocation = msg.path
+		m.state = confirmationState
+		m.cursor = 0
 	}
 	return m, nil
 }
@@ -693,8 +782,55 @@ func (m *Model) runDownload() {
 		"--no-color",
 		"--extractor-retries", "2",
 		"--fragment-retries", "3",
-		"--output", m.TempDir + "/" + m.cfg.OutputTemplate,
+		"--progress-template", "%(progress)s %(progress._total_bytes_str)s %(progress._downloaded_bytes_str)s %(progress._speed_str)s %(progress._eta_str)s",
 	}
+
+	// Check if this is a problematic site that needs special handling
+	problematicSites := []string{
+		"pornhub.com", "xvideos.com", "xhamster.com", "youporn.com", "redtube.com",
+		"spankbang.com", "eporner.com", "tube8.com", "tnaflix.com", "keezmovies.com",
+		"twitter.com", "x.com", "instagram.com", "facebook.com", "tiktok.com",
+		"vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com",
+		"reddit.com", "imgur.com", "giphy.com",
+	}
+
+	isProblematic := false
+	for _, site := range problematicSites {
+		if strings.Contains(m.url, site) {
+			isProblematic = true
+			break
+		}
+	}
+
+	if isProblematic {
+		// Reduce concurrent fragments and increase retries for problematic sites
+		cmdArgs = []string{
+			"--no-overwrites",
+			"--geo-bypass",
+			"--no-check-certificate",
+			"--concurrent-fragments", "8", // Reduced from 32
+			"--buffer-size", "32K", // Reduced from 64K
+			"--http-chunk-size", "5M", // Reduced from 10M
+			"--newline",
+			"--progress",
+			"--no-color",
+			"--extractor-retries", "5", // Increased from 2
+			"--fragment-retries", "10", // Increased from 3
+			"--retries", "10", // Added general retries
+			"--retry-sleep", "5", // Added sleep between retries
+			"--progress-template", "%(progress)s %(progress._total_bytes_str)s %(progress._downloaded_bytes_str)s %(progress._speed_str)s %(progress._eta_str)s",
+		}
+	}
+
+	var outputPath string
+	if m.cfg.DownloadLocation != "" {
+		// Custom location: create subdirectory with video name
+		outputPath = m.cfg.DownloadLocation + "/%(title)s/%(title)s.%(ext)s"
+	} else {
+		// Current directory: use TempDir
+		outputPath = m.TempDir + "/" + m.cfg.OutputTemplate
+	}
+	cmdArgs = append(cmdArgs, "--output", outputPath)
 
 	if m.cfg.CookieBrowser != "" {
 		cmdArgs = append(cmdArgs, "--cookies-from-browser", m.cfg.CookieBrowser)
@@ -702,6 +838,64 @@ func (m *Model) runDownload() {
 
 	// Add user-agent to avoid bot detection
 	cmdArgs = append(cmdArgs, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	// Add site-specific headers and settings
+	if isProblematic {
+		// Common headers for all problematic sites
+		cmdArgs = append(cmdArgs, "--add-header", "Accept-Language:en-US,en;q=0.9")
+		cmdArgs = append(cmdArgs, "--add-header", "Accept:*/*")
+		cmdArgs = append(cmdArgs, "--add-header", "Connection:keep-alive")
+		cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Dest:empty")
+		cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Mode:cors")
+		cmdArgs = append(cmdArgs, "--sleep-interval", "1")
+		cmdArgs = append(cmdArgs, "--max-sleep-interval", "3")
+
+		// Site-specific headers
+		if strings.Contains(m.url, "pornhub.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.pornhub.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.pornhub.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+			cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=1")
+			cmdArgs = append(cmdArgs, "--add-header", "Cookie:accessAgeDisclaimerPH=1")
+		} else if strings.Contains(m.url, "xvideos.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.xvideos.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.xvideos.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+		} else if strings.Contains(m.url, "xhamster.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://xhamster.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://xhamster.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+			cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=true")
+		} else if strings.Contains(m.url, "twitter.com") || strings.Contains(m.url, "x.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://twitter.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://twitter.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+			cmdArgs = append(cmdArgs, "--add-header", "Authorization:Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4qs")
+		} else if strings.Contains(m.url, "instagram.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.instagram.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.instagram.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+		} else if strings.Contains(m.url, "tiktok.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.tiktok.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.tiktok.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+		} else if strings.Contains(m.url, "vimeo.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://vimeo.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://vimeo.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+		} else if strings.Contains(m.url, "reddit.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.reddit.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.reddit.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+		} else if strings.Contains(m.url, "facebook.com") {
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.facebook.com/")
+			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.facebook.com")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+		} else {
+			// Generic headers for other problematic sites
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:cross-origin")
+		}
+	}
 
 	if m.cfg.IsAudioOnly {
 		cmdArgs = append(cmdArgs, "--extract-audio", "--audio-format", m.cfg.AudioFormat)
@@ -871,18 +1065,15 @@ func (m *Model) parseOutput(reader io.Reader) {
 	}
 }
 
-var progressChan = make(chan tea.Msg, 100)
+var progressChan = make(chan tea.Msg, 1000)
 
 func (m *Model) sendProgress(progress string, percent float64, speed, eta string) {
-	select {
-	case progressChan <- downloadProgressMsg{
+	// Send progress update (blocking to ensure no updates are dropped)
+	progressChan <- downloadProgressMsg{
 		progress: progress,
 		percent:  percent,
 		speed:    speed,
 		eta:      eta,
-	}:
-	default:
-		// Channel full, skip this update
 	}
 }
 
@@ -1063,10 +1254,15 @@ func (m *Model) View() string {
 		mainContent.WriteString(headerStyle.Render("Select download format"))
 		mainContent.WriteString("\n")
 		for i, choice := range m.choices {
+			// Truncate choice if too long
+			displayChoice := choice
+			if len(displayChoice) > maxContentWidth-5 {
+				displayChoice = displayChoice[:maxContentWidth-8] + "..."
+			}
 			if m.cursor == i {
-				mainContent.WriteString(selectedStyle.Render(fmt.Sprintf("> %s", choice)))
+				mainContent.WriteString(selectedStyle.Render(fmt.Sprintf("> %s", displayChoice)))
 			} else {
-				mainContent.WriteString(choiceStyle.Render(fmt.Sprintf("  %s", choice)))
+				mainContent.WriteString(choiceStyle.Render(fmt.Sprintf("  %s", displayChoice)))
 			}
 			mainContent.WriteString("\n")
 		}
@@ -1109,6 +1305,25 @@ func (m *Model) View() string {
 		mainContent.WriteString(headerStyle.Render("Select resolution"))
 		mainContent.WriteString("\n")
 		for i, choice := range m.choices {
+			// Truncate choice if too long
+			displayChoice := choice
+			if len(displayChoice) > maxContentWidth-5 {
+				displayChoice = displayChoice[:maxContentWidth-8] + "..."
+			}
+			if m.cursor == i {
+				mainContent.WriteString(selectedStyle.Render(fmt.Sprintf("> %s", displayChoice)))
+			} else {
+				mainContent.WriteString(choiceStyle.Render(fmt.Sprintf("  %s", displayChoice)))
+			}
+			mainContent.WriteString("\n")
+		}
+		noteStyle := lipgloss.NewStyle().Faint(true).Width(maxContentWidth)
+		mainContent.WriteString("\n" + noteStyle.Render(
+			"Note: Some formats may be restricted by YouTube.\nIf download fails, try Default or run `yt-dlp --list-formats <URL>`."))
+	case downloadLocationState:
+		mainContent.WriteString(headerStyle.Render("Choose Download Location"))
+		mainContent.WriteString("\n")
+		for i, choice := range m.locationChoices {
 			if m.cursor == i {
 				mainContent.WriteString(selectedStyle.Render(fmt.Sprintf("> %s", choice)))
 			} else {
@@ -1116,9 +1331,17 @@ func (m *Model) View() string {
 			}
 			mainContent.WriteString("\n")
 		}
-		mainContent.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render(
-			"Note: Some formats may be restricted by YouTube.\nIf download fails, try Default or run `yt-dlp --list-formats <URL>`."))
+		mainContent.WriteString("\n")
+		infoStyle := lipgloss.NewStyle().Faint(true).Width(maxContentWidth).Align(lipgloss.Center)
+		mainContent.WriteString(infoStyle.Render("Files will be downloaded to the selected location"))
 	case confirmationState:
+		// Thumbnail display disabled for now
+		// thumbnail := m.renderThumbnail(maxContentWidth)
+		// if thumbnail != "" {
+		// 	mainContent.WriteString(thumbnail)
+		// 	mainContent.WriteString("\n\n")
+		// }
+
 		// Truncate title if too long
 		displayTitle := m.Title
 		maxTitleWidth := maxContentWidth - 20
@@ -1190,4 +1413,135 @@ func (m *Model) View() string {
 	combined := lipgloss.JoinVertical(lipgloss.Center, content.String(), mainPanel, footer)
 	ui := lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, combined)
 	return ui
+}
+
+// renderThumbnail displays thumbnail based on terminal capabilities
+func (m *Model) renderThumbnail(width int) string {
+	if m.ThumbnailPath == "" {
+		return ""
+	}
+
+	if m.IsKittyTerminal {
+		return m.renderKittyImage(width)
+	} else {
+		return m.renderASCIIArt(width)
+	}
+}
+
+// renderKittyImage displays image using kitty's graphics protocol
+func (m *Model) renderKittyImage(width int) string {
+	if _, err := os.Stat(m.ThumbnailPath); err != nil {
+		return ""
+	}
+
+	// Read image file
+	imageData, err := os.ReadFile(m.ThumbnailPath)
+	if err != nil {
+		return ""
+	}
+
+	// Encode to base64
+	encoded := base64.StdEncoding.EncodeToString(imageData)
+
+	// Split into chunks (kitty protocol has 4096 byte limit per chunk)
+	chunkSize := 4096
+	var result strings.Builder
+
+	// If image fits in one chunk, send it directly
+	if len(encoded) <= chunkSize {
+		result.WriteString(fmt.Sprintf("\033_Gf=100,a=T,t=d;%s\033\\", encoded))
+		return result.String()
+	}
+
+	// Multiple chunks needed
+	for i := 0; i < len(encoded); i += chunkSize {
+		end := i + chunkSize
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		chunk := encoded[i:end]
+
+		// First chunk includes format info, subsequent chunks use 'm=1'
+		if i == 0 {
+			result.WriteString(fmt.Sprintf("\033_Gf=100,a=T,t=d,m=1;%s\033\\", chunk))
+		} else if end >= len(encoded) {
+			// Last chunk
+			result.WriteString(fmt.Sprintf("\033_Gm=0;%s\033\\", chunk))
+		} else {
+			// Middle chunks
+			result.WriteString(fmt.Sprintf("\033_Gm=1;%s\033\\", chunk))
+		}
+	}
+
+	return result.String()
+}
+
+// renderASCIIArt creates a simple ASCII art representation
+func (m *Model) renderASCIIArt(width int) string {
+	// Simple ASCII art placeholder for video thumbnail
+	asciiArt := `
+╔══════════════════════════════════════╗
+║                                      ║
+║     📹 VIDEO THUMBNAIL               ║
+║                                      ║
+║     [Image Preview]                  ║
+║                                      ║
+║     ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  ║
+║     ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  ║
+║     ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  ║
+║     ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  ║
+║     ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  ║
+║                                      ║
+╚══════════════════════════════════════╝`
+
+	return asciiArt
+}
+
+// launchYaziFileExplorer launches yazi file explorer for location selection
+func (m *Model) launchYaziFileExplorer() tea.Cmd {
+	// Create temporary file for path output
+	tmpFile := "/tmp/yaria-selected-path"
+	if runtime.GOOS == "windows" {
+		tmpFile = os.TempDir() + "\\yaria-selected-path"
+	}
+
+	// Get yazi binary path
+	exePath, _ := os.Executable()
+	depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
+	yaziBinary := filepath.Join(depsDir, "yazi")
+	if runtime.GOOS == "windows" {
+		yaziBinary += ".exe"
+	}
+
+	// Check if yazi exists in dependencies or system PATH
+	yaziPath := yaziBinary
+	if _, err := os.Stat(yaziPath); err != nil {
+		if _, err := exec.LookPath("yazi"); err != nil {
+			// Yazi not found, use current directory as fallback
+			return func() tea.Msg {
+				return yaziLocationSelectedMsg{path: m.TempDir}
+			}
+		} else {
+			yaziPath = "yazi"
+		}
+	}
+
+	// Use tea.ExecProcess to properly suspend TUI and launch yazi
+	c := exec.Command(yaziPath, "--chooser-file", tmpFile)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		// Read the selected path from temp file
+		if err == nil {
+			if path, readErr := os.ReadFile(tmpFile); readErr == nil {
+				selectedPath := strings.TrimSpace(string(path))
+				if selectedPath != "" {
+					os.Remove(tmpFile)
+					return yaziLocationSelectedMsg{path: selectedPath}
+				}
+			}
+		}
+
+		os.Remove(tmpFile)
+		// Fallback to current directory
+		return yaziLocationSelectedMsg{path: m.TempDir}
+	})
 }

@@ -25,6 +25,7 @@ type Downloader interface {
 	GetMetadata(args []string) (string, string, error)
 	GetOutputFilename(args []string, tempDir string) (string, error)
 	GetFormats(url string) ([]Format, error)
+	GetThumbnail(args []string, tempDir string) (string, error)
 	Download(args []string, tempDir string) (bool, error)
 }
 
@@ -327,12 +328,98 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		fmt.Fprintf(cfg.Stderr, "Found deno in system PATH\n")
 	}
 
+	// Check and download yazi for file explorer integration (optional)
+	yaziBinary := "yazi"
+	if runtime.GOOS == "windows" {
+		yaziBinary = "yazi.exe"
+	}
+	yaziPath := filepath.Join(depsDir, yaziBinary)
+	if _, err := exec.LookPath(yaziBinary); err != nil {
+		if _, err := os.Stat(yaziPath); err != nil {
+			fmt.Fprintf(cfg.Stderr, "Downloading yazi for file explorer (optional)...\n")
+			// Yazi download URLs - using specific version for stability
+			var yaziURL string
+			switch runtime.GOOS {
+			case "linux":
+				yaziURL = "https://github.com/sxyazi/yazi/releases/latest/download/yazi-x86_64-unknown-linux-gnu.zip"
+			case "darwin":
+				if runtime.GOARCH == "arm64" {
+					yaziURL = "https://github.com/sxyazi/yazi/releases/latest/download/yazi-aarch64-apple-darwin.zip"
+				} else {
+					yaziURL = "https://github.com/sxyazi/yazi/releases/latest/download/yazi-x86_64-apple-darwin.zip"
+				}
+			case "windows":
+				yaziURL = "https://github.com/sxyazi/yazi/releases/latest/download/yazi-x86_64-pc-windows-msvc.zip"
+			}
+
+			if yaziURL != "" {
+				resp, err := http.Get(yaziURL)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						zipPath := filepath.Join(depsDir, "yazi.zip")
+						zipFile, err := os.Create(zipPath)
+						if err == nil {
+							_, err = io.Copy(zipFile, resp.Body)
+							zipFile.Close()
+							if err == nil {
+								// Extract yazi binary
+								if err := extractYaziFromZip(zipPath, yaziPath); err == nil {
+									os.Remove(zipPath)
+									if runtime.GOOS != "windows" {
+										os.Chmod(yaziPath, 0o755)
+									}
+									fmt.Fprintf(cfg.Stderr, "Downloaded yazi to %s\n", yaziPath)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Update last_check timestamp if versions were checked
 	if shouldCheckVersions {
 		if f, err := os.Create(lastCheckFile); err != nil {
 			fmt.Fprintf(cfg.Stderr, "Warning: Failed to update last_check timestamp: %v\n", err)
 		} else {
 			f.Close()
+		}
+	}
+
+	// Install/update webtorrent-cli via deno
+	webtorrentPath := filepath.Join(depsDir, "webtorrent")
+	if runtime.GOOS == "windows" {
+		webtorrentPath += ".cmd"
+	}
+
+	webtorrentExists := false
+	if _, err := os.Stat(webtorrentPath); err == nil {
+		webtorrentExists = true
+	}
+
+	// Install or update webtorrent-cli if needed
+	if !webtorrentExists {
+		fmt.Fprintf(cfg.Stderr, "Installing webtorrent-cli for torrent streaming support...\n")
+		denoCmd := filepath.Join(depsDir, denoBinary)
+		installCmd := exec.Command(denoCmd, "install", "-g", "--allow-all", "-n", "webtorrent", "npm:webtorrent-cli")
+		installCmd.Env = append(os.Environ(), "DENO_INSTALL_ROOT="+depsDir)
+		if output, err := installCmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(cfg.Stderr, "Warning: Failed to install webtorrent-cli: %v\n%s\n", err, string(output))
+		} else {
+			fmt.Fprintf(cfg.Stderr, "Installed webtorrent-cli successfully\n")
+		}
+	} else if shouldCheckVersions {
+		// Check for webtorrent-cli updates (once per day)
+		fmt.Fprintf(cfg.Stderr, "Checking for webtorrent-cli updates...\n")
+		denoCmd := filepath.Join(depsDir, denoBinary)
+		updateCmd := exec.Command(denoCmd, "install", "-g", "--allow-all", "-f", "-n", "webtorrent", "npm:webtorrent-cli")
+		updateCmd.Env = append(os.Environ(), "DENO_INSTALL_ROOT="+depsDir)
+		if output, err := updateCmd.CombinedOutput(); err == nil {
+			if strings.Contains(string(output), "installed") || strings.Contains(string(output), "updated") {
+				fmt.Fprintf(cfg.Stderr, "Updated webtorrent-cli to latest version\n")
+			}
 		}
 	}
 
@@ -381,6 +468,36 @@ func extractDenoFromZip(zipPath, destPath string) error {
 		}
 	}
 	return errors.New("deno binary not found in zip archive")
+}
+
+// extractYaziFromZip extracts yazi binary from zip archive
+func extractYaziFromZip(zipPath, destPath string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		// Look for yazi binary in the zip (usually in yazi-*/yazi or yazi-*/yazi.exe)
+		if strings.Contains(f.Name, "yazi") && (strings.HasSuffix(f.Name, "/yazi") || strings.HasSuffix(f.Name, "\\yazi") || strings.HasSuffix(f.Name, "/yazi.exe") || strings.HasSuffix(f.Name, "\\yazi.exe")) {
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			defer rc.Close()
+
+			outFile, err := os.Create(destPath)
+			if err != nil {
+				return err
+			}
+			defer outFile.Close()
+
+			_, err = io.Copy(outFile, rc)
+			return err
+		}
+	}
+	return errors.New("yazi binary not found in zip archive")
 }
 
 // readFile reads the content of a file
@@ -497,6 +614,89 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	return playlistInfo, title, nil
 }
 
+// StreamTorrent streams a torrent magnet link using webtorrent-cli with mpv or vlc
+func (d *YTDLPDownloader) StreamTorrent(magnetLink string) error {
+	// Check for media players (mpv has priority)
+	var player string
+	if _, err := exec.LookPath("mpv"); err == nil {
+		player = "mpv"
+	} else if _, err := exec.LookPath("vlc"); err == nil {
+		player = "vlc"
+	} else {
+		return errors.New("no media player found (install mpv or vlc)")
+	}
+
+	fmt.Fprintf(d.cfg.Stdout, "Streaming torrent with %s...\n", player)
+	fmt.Fprintf(d.cfg.Stdout, "Press Ctrl+C to stop streaming\n\n")
+
+	// Get webtorrent path
+	exePath, _ := os.Executable()
+	depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
+	webtorrentPath := filepath.Join(depsDir, "webtorrent")
+	if runtime.GOOS == "windows" {
+		webtorrentPath += ".cmd"
+	}
+
+	// Check if webtorrent exists
+	if _, err := os.Stat(webtorrentPath); err != nil {
+		// Try system webtorrent
+		if _, err := exec.LookPath("webtorrent"); err != nil {
+			return errors.New("webtorrent-cli not installed")
+		}
+		webtorrentPath = "webtorrent"
+	}
+
+	// Stream with webtorrent
+	cmd := exec.Command(webtorrentPath, magnetLink, "--"+player)
+	cmd.Stdout = d.cfg.Stdout
+	cmd.Stderr = d.cfg.Stderr
+	cmd.Stdin = os.Stdin
+
+	return cmd.Run()
+}
+
+// Extracts video thumbnail to a temporary file
+func (d *YTDLPDownloader) GetThumbnail(args []string, tempDir string) (string, error) {
+	ytDlpCmd := "yt-dlp"
+	if runtime.GOOS == "windows" {
+		ytDlpCmd = "yt-dlp.exe"
+	}
+
+	// Create base thumbnail file path (yt-dlp will append video ID)
+	thumbnailBase := filepath.Join(tempDir, "yaria_thumb")
+
+	// Extract thumbnail
+	thumbnailArgs := []string{
+		"--write-thumbnail",
+		"--skip-download",
+		"--convert-thumbnails", "jpg",
+		"--no-warnings",
+		"--output", thumbnailBase + ".%(ext)s",
+	}
+
+	if d.cfg.CookieBrowser != "" {
+		thumbnailArgs = append(thumbnailArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
+	}
+	thumbnailArgs = append(thumbnailArgs, args...)
+
+	cmd := exec.Command(ytDlpCmd, thumbnailArgs...)
+	err := cmd.Run()
+	if err != nil {
+		// If thumbnail extraction fails, return empty path (not critical error)
+		return "", nil
+	}
+
+	// Find the created thumbnail file (yt-dlp appends video ID and extension)
+	// Look for files matching the pattern
+	files, err := filepath.Glob(thumbnailBase + "*")
+	if err != nil || len(files) == 0 {
+		return "", nil
+	}
+
+	// Return the first matching file
+	return files[0], nil
+}
+
 // Predicts the output filename
 func (d *YTDLPDownloader) GetOutputFilename(args []string, tempDir string) (string, error) {
 	ytDlpCmd := "yt-dlp"
@@ -545,12 +745,25 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 		return nil, err
 	}
 
+	// Debug: print raw output for non-YouTube sites
+	if strings.Contains(url, "youtube.com") == false {
+		fmt.Fprintf(d.cfg.Stderr, "DEBUG: Raw formats output for %s:\n%s\n", url, string(output))
+	}
+
 	var formats []Format
 	lines := splitLines(string(output))
 	for _, line := range lines {
-		if strings.Contains(line, "video only") || strings.Contains(line, "audio only") {
+		// Skip header lines and empty lines
+		if strings.HasPrefix(line, "[") || strings.HasPrefix(line, " ") || len(strings.TrimSpace(line)) == 0 {
+			continue
+		}
+
+		// Look for format lines - more flexible matching
+		if strings.Contains(line, "video only") || strings.Contains(line, "audio only") ||
+			(strings.Contains(line, "mp4") || strings.Contains(line, "webm")) ||
+			(len(strings.Fields(line)) > 2 && strings.Fields(line)[0] != "ID" && !strings.Contains(line, "extension")) {
 			fields := strings.Fields(line)
-			if len(fields) < 3 {
+			if len(fields) < 2 {
 				continue
 			}
 			formatID := fields[0]
@@ -560,12 +773,22 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 			protocol := ""
 			fileSize := ""
 			for _, field := range fields {
+				// Try to extract height from various formats
 				if strings.Contains(field, "x") && !isAudio {
 					parts := strings.Split(field, "x")
 					if len(parts) >= 2 {
-						if res, err := strconv.Atoi(parts[1]); err == nil {
+						// Remove any non-numeric characters from the second part
+						heightStr := strings.TrimSuffix(parts[1], "p")
+						heightStr = strings.TrimSuffix(heightStr, "i")
+						if res, err := strconv.Atoi(heightStr); err == nil {
 							height = res
 						}
+					}
+				} else if strings.HasSuffix(field, "p") && !isAudio {
+					// Handle formats like "720p"
+					heightStr := strings.TrimSuffix(field, "p")
+					if res, err := strconv.Atoi(heightStr); err == nil {
+						height = res
 					}
 				}
 				if strings.Contains(field, "mp4") || strings.Contains(field, "webm") || strings.Contains(field, "m4a") || strings.Contains(field, "mp3") {
@@ -585,7 +808,15 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 				}
 			}
 			// Include formats with m3u8 as a fallback, prioritize http
-			if (isAudio && ext != "") || (!isAudio && height > 0) {
+			// For non-YouTube sites, include formats even without explicit height
+			includeFormat := (isAudio && ext != "") || (!isAudio && height > 0)
+			if !includeFormat && !isAudio && !strings.Contains(url, "youtube.com") && ext != "" {
+				// For non-YouTube sites, include video formats even without height
+				includeFormat = true
+				height = 720 // Default height for unknown formats
+			}
+
+			if includeFormat {
 				formats = append(formats, Format{
 					ID:       formatID,
 					Height:   height,
@@ -654,23 +885,157 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		ytDlpCmd = "yt-dlp.exe"
 	}
 	for attempt := 1; attempt <= d.cfg.MaxRetries; attempt++ {
-		cmdArgs := []string{
-			"--no-overwrites",
-			"--geo-bypass",
-			"--no-check-certificate",
-			"--concurrent-fragments", "32",
-			"--buffer-size", "64K",
-			"--http-chunk-size", "10M",
-			"--no-warnings",
-			"--progress",
-			"--newline",
-			"--extractor-retries", "2",
-			"--fragment-retries", "3",
-			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-			"--output", tempDir + "/" + d.cfg.OutputTemplate,
+		// Check if this is a problematic site that needs special handling
+		problematicSites := []string{
+			"pornhub.com", "xvideos.com", "xhamster.com", "youporn.com", "redtube.com",
+			"spankbang.com", "eporner.com", "tube8.com", "tnaflix.com", "keezmovies.com",
+			"twitter.com", "x.com", "instagram.com", "facebook.com", "tiktok.com",
+			"vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com",
+			"reddit.com", "imgur.com", "giphy.com",
 		}
+
+		isProblematic := false
+		for _, arg := range args {
+			for _, site := range problematicSites {
+				if strings.Contains(arg, site) {
+					isProblematic = true
+					break
+				}
+			}
+			if isProblematic {
+				break
+			}
+		}
+
+		var cmdArgs []string
+		if isProblematic {
+			// Use conservative settings for problematic sites
+			cmdArgs = []string{
+				"--no-overwrites",
+				"--geo-bypass",
+				"--concurrent-fragments", "8",
+				"--buffer-size", "32K",
+				"--http-chunk-size", "4M",
+				"--no-warnings",
+				"--progress",
+				"--newline",
+				"--extractor-retries", "5",
+				"--fragment-retries", "10",
+				"--retries", "10",
+				"--retry-sleep", "5",
+				"--socket-timeout", "60",
+				"--http-timeout", "60",
+				"--fragment-timeout", "60",
+				"--sleep-interval", "1",
+				"--max-sleep-interval", "3",
+			}
+		} else {
+			cmdArgs = []string{
+				"--no-overwrites",
+				"--geo-bypass",
+				"--concurrent-fragments", "16",
+				"--buffer-size", "64K",
+				"--http-chunk-size", "8M",
+				"--no-warnings",
+				"--progress",
+				"--newline",
+				"--extractor-retries", "3",
+				"--fragment-retries", "5",
+				"--retries", "3",
+				"--socket-timeout", "30",
+				"--http-timeout", "30",
+				"--fragment-timeout", "30",
+			}
+		}
+
+		// Add common arguments for both cases
+		cmdArgs = append(cmdArgs,
+			"--no-cache-dir",
+			"--no-part",
+			"--no-mtime",
+			"--no-write-thumbnail",
+			"--no-write-description",
+			"--no-write-info-json",
+			"--no-write-subtitles",
+			"--no-write-auto-sub",
+			"--no-write-annotations",
+			"--no-write-comments",
+			"--no-write-playlist-metafiles",
+			"--no-write-embed-subs",
+			"--no-write-embed-chapters",
+			"--no-write-embed-info-json",
+			"--no-write-embed-thumbnail",
+			"--no-write-embed-metadata",
+			"--no-write-playlist-json",
+			"--no-write-playlist-infojson",
+			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+			"--output", tempDir+"/"+d.cfg.OutputTemplate,
+		)
 		if d.cfg.CookieBrowser != "" {
 			cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
+		}
+
+		// Add site-specific headers and settings
+		if isProblematic {
+			// Common headers for all problematic sites
+			cmdArgs = append(cmdArgs, "--add-header", "Accept-Language:en-US,en;q=0.9")
+			cmdArgs = append(cmdArgs, "--add-header", "Accept:*/*")
+			cmdArgs = append(cmdArgs, "--add-header", "Connection:keep-alive")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Dest:empty")
+			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Mode:cors")
+
+			// Site-specific headers
+			for _, arg := range args {
+				if strings.Contains(arg, "pornhub.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.pornhub.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.pornhub.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=1")
+					cmdArgs = append(cmdArgs, "--add-header", "Cookie:accessAgeDisclaimerPH=1")
+					break
+				} else if strings.Contains(arg, "xvideos.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.xvideos.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.xvideos.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					break
+				} else if strings.Contains(arg, "xhamster.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://xhamster.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://xhamster.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=true")
+					break
+				} else if strings.Contains(arg, "twitter.com") || strings.Contains(arg, "x.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://twitter.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://twitter.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					break
+				} else if strings.Contains(arg, "instagram.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.instagram.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.instagram.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					break
+				} else if strings.Contains(arg, "tiktok.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.tiktok.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.tiktok.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					break
+				} else if strings.Contains(arg, "vimeo.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://vimeo.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://vimeo.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					break
+				} else if strings.Contains(arg, "reddit.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.reddit.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.reddit.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					break
+				} else if strings.Contains(arg, "facebook.com") {
+					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.facebook.com/")
+					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.facebook.com")
+					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
+					break
+				}
+			}
 		}
 		if d.cfg.IsAudioOnly {
 			cmdArgs = append(cmdArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
@@ -693,6 +1058,13 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		cmd.Stdout = d.cfg.Stdout
 		cmd.Stderr = d.cfg.Stderr
 
+		// Set environment variables for better performance
+		cmd.Env = append(os.Environ(),
+			"PYTHONNOUSERSITE=1",
+			"PYTHONDONTWRITEBYTECODE=1",
+			"PYTHONUNBUFFERED=1",
+		)
+
 		if err := cmd.Run(); err == nil {
 			return true, nil
 		} else {
@@ -702,11 +1074,26 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				fallbackArgs := []string{
 					"--no-overwrites",
 					"--geo-bypass",
-					"--no-check-certificate",
-					"--concurrent-fragments", "16",
+					"--concurrent-fragments", "8",
+					"--buffer-size", "32K",
+					"--http-chunk-size", "4M",
 					"--no-warnings",
 					"--progress",
 					"--newline",
+					"--extractor-retries", "3",
+					"--fragment-retries", "5",
+					"--retries", "3",
+					"--socket-timeout", "30",
+					"--http-timeout", "30",
+					"--no-cache-dir",
+					"--no-part",
+					"--no-mtime",
+					"--no-write-thumbnail",
+					"--no-write-description",
+					"--no-write-info-json",
+					"--no-write-subtitles",
+					"--no-write-auto-sub",
+					"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 					"--output", tempDir + "/" + d.cfg.OutputTemplate,
 				}
 				if d.cfg.CookieBrowser != "" {
@@ -728,6 +1115,13 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				cmd := exec.Command(ytDlpCmd, fallbackArgs...)
 				cmd.Stdout = d.cfg.Stdout
 				cmd.Stderr = d.cfg.Stderr
+
+				// Set environment variables for better performance
+				cmd.Env = append(os.Environ(),
+					"PYTHONNOUSERSITE=1",
+					"PYTHONDONTWRITEBYTECODE=1",
+					"PYTHONUNBUFFERED=1",
+				)
 				if err := cmd.Run(); err == nil {
 					return true, nil
 				}

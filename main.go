@@ -205,6 +205,23 @@ func main() {
 
 	var playlistInfo, videoTitle string
 
+	// Check if first argument is a magnet link (torrent streaming - CLI only)
+	if len(args) > 0 && strings.HasPrefix(args[0], "magnet:") {
+		log.Info("Detected magnet link - streaming torrent...")
+		dl, err := downloader.New(cfg)
+		if err != nil {
+			log.Error("Error: Failed to initialize downloader: %v", err)
+			os.Exit(1)
+		}
+
+		// Stream torrent with mpv or vlc
+		if err := dl.StreamTorrent(args[0]); err != nil {
+			log.Error("Error: Failed to stream torrent: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// SINGLE TUI RUN - Run TUI twice: first for selection, then for download
 	if len(args) == 0 {
 		// First run: Get URL, format, and resolution
@@ -256,15 +273,8 @@ func main() {
 			}
 		}
 
-		// Create unique temp directory
-		tempDir, err := utils.CreateUniqueTempDir(finalName)
-		if err != nil {
-			log.Error("Failed to create directory: %s: %v", tempDir, err)
-			os.Exit(1)
-		}
-
 		// Set download parameters in TUI
-		tuiInstance.TempDir = tempDir
+		// Note: TempDir will be set by user's location choice in TUI
 		tuiInstance.Args = args
 
 		// Second run: Show download progress in TUI (skip confirmation)
