@@ -388,44 +388,87 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		}
 	}
 
-	// Install/update webtorrent-cli via deno
-	webtorrentPath := filepath.Join(depsDir, "webtorrent")
+	// Install webtorrent-cli for torrent streaming support
+	webtorrentBinary := "webtorrent"
 	if runtime.GOOS == "windows" {
-		webtorrentPath += ".cmd"
+		webtorrentBinary = "webtorrent.cmd"
 	}
 
-	webtorrentExists := false
-	if _, err := os.Stat(webtorrentPath); err == nil {
-		webtorrentExists = true
-	}
-
-	// Install or update webtorrent-cli if needed
-	if !webtorrentExists {
-		fmt.Fprintf(cfg.Stderr, "Installing webtorrent-cli for torrent streaming support...\n")
-		denoCmd := filepath.Join(depsDir, denoBinary)
-		installCmd := exec.Command(denoCmd, "install", "-g", "--allow-all", "-n", "webtorrent", "npm:webtorrent-cli")
-		installCmd.Env = append(os.Environ(), "DENO_INSTALL_ROOT="+depsDir)
-		if output, err := installCmd.CombinedOutput(); err != nil {
-			fmt.Fprintf(cfg.Stderr, "Warning: Failed to install webtorrent-cli: %v\n%s\n", err, string(output))
-		} else {
-			fmt.Fprintf(cfg.Stderr, "Installed webtorrent-cli successfully\n")
+	// Check if webtorrent-cli is available
+	webtorrentInstalled := false
+	if _, err := exec.LookPath("webtorrent"); err == nil {
+		webtorrentInstalled = true
+		fmt.Fprintf(cfg.Stderr, "Found webtorrent-cli in system PATH\n")
+	} else {
+		// Check in dependencies folder
+		webtorrentPath := filepath.Join(depsDir, "bin", webtorrentBinary)
+		if _, err := os.Stat(webtorrentPath); err == nil {
+			webtorrentInstalled = true
+			fmt.Fprintf(cfg.Stderr, "Found webtorrent-cli in dependencies\n")
 		}
-	} else if shouldCheckVersions {
-		// Check for webtorrent-cli updates (once per day)
-		fmt.Fprintf(cfg.Stderr, "Checking for webtorrent-cli updates...\n")
-		denoCmd := filepath.Join(depsDir, denoBinary)
-		updateCmd := exec.Command(denoCmd, "install", "-g", "--allow-all", "-f", "-n", "webtorrent", "npm:webtorrent-cli")
-		updateCmd.Env = append(os.Environ(), "DENO_INSTALL_ROOT="+depsDir)
-		if output, err := updateCmd.CombinedOutput(); err == nil {
-			if strings.Contains(string(output), "installed") || strings.Contains(string(output), "updated") {
-				fmt.Fprintf(cfg.Stderr, "Updated webtorrent-cli to latest version\n")
+	}
+
+	if !webtorrentInstalled {
+		fmt.Fprintf(cfg.Stderr, "Installing webtorrent-cli for torrent streaming...\n")
+
+		// Try deno first (if available)
+		denoInstalled := false
+		if _, err := exec.LookPath(denoBinary); err == nil {
+			denoInstalled = true
+		} else if _, err := os.Stat(denoPath); err == nil {
+			denoInstalled = true
+		}
+
+		if denoInstalled {
+			fmt.Fprintf(cfg.Stderr, "Trying to install webtorrent-cli via deno...\n")
+			denoCmd := denoPath
+			if _, err := exec.LookPath(denoBinary); err == nil {
+				denoCmd = denoBinary
+			}
+
+			// Create bin directory in dependencies
+			binDir := filepath.Join(depsDir, "bin")
+			os.MkdirAll(binDir, 0o755)
+
+			installCmd := exec.Command(denoCmd, "install", "-g", "--allow-all", "--root", depsDir, "-n", "webtorrent", "npm:webtorrent-cli")
+			output, err := installCmd.CombinedOutput()
+			if err == nil {
+				fmt.Fprintf(cfg.Stderr, "Installed webtorrent-cli via deno successfully\n")
+				webtorrentInstalled = true
+			} else {
+				fmt.Fprintf(cfg.Stderr, "Deno install failed: %v\n%s\n", err, string(output))
 			}
 		}
+
+		// Try npm as fallback
+		if !webtorrentInstalled {
+			if _, err := exec.LookPath("npm"); err == nil {
+				fmt.Fprintf(cfg.Stderr, "Trying to install webtorrent-cli via npm...\n")
+
+				// Install to dependencies folder
+				installCmd := exec.Command("npm", "install", "-g", "--prefix", depsDir, "webtorrent-cli")
+				output, err := installCmd.CombinedOutput()
+				if err == nil {
+					fmt.Fprintf(cfg.Stderr, "Installed webtorrent-cli via npm successfully\n")
+					webtorrentInstalled = true
+				} else {
+					fmt.Fprintf(cfg.Stderr, "npm install failed: %v\n%s\n", err, string(output))
+				}
+			} else {
+				fmt.Fprintf(cfg.Stderr, "npm not found, skipping webtorrent-cli installation\n")
+			}
+		}
+
+		if !webtorrentInstalled {
+			fmt.Fprintf(cfg.Stderr, "Warning: webtorrent-cli installation failed. Torrent streaming will not be available.\n")
+			fmt.Fprintf(cfg.Stderr, "You can install it manually: npm install -g webtorrent-cli\n")
+		}
 	}
 
-	// Update PATH to include dependencies folder
+	// Update PATH to include dependencies folder and bin directory
 	currentPath := os.Getenv("PATH")
-	newPath := depsDir + string(os.PathListSeparator) + currentPath
+	binDir := filepath.Join(depsDir, "bin")
+	newPath := depsDir + string(os.PathListSeparator) + binDir + string(os.PathListSeparator) + currentPath
 	if err := os.Setenv("PATH", newPath); err != nil {
 		return nil, fmt.Errorf("failed to update PATH: %v", err)
 	}
@@ -518,8 +561,51 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		ytDlpCmd = "yt-dlp.exe"
 	}
 
+	// Check if this is a problematic site that needs special headers
+	url := ""
+	if len(args) > 0 {
+		url = args[0]
+	}
+
+	problematicSites := []string{
+		"pornhub.com", "xvideos.com", "xhamster.com", "youporn.com", "redtube.com",
+		"spankbang.com", "eporner.com", "tube8.com", "tnaflix.com", "keezmovies.com",
+		"twitter.com", "x.com", "instagram.com", "facebook.com", "tiktok.com",
+		"vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com",
+		"reddit.com", "imgur.com", "giphy.com",
+	}
+
+	isProblematic := false
+	for _, site := range problematicSites {
+		if strings.Contains(url, site) {
+			isProblematic = true
+			break
+		}
+	}
+
 	// Get title first
 	titleArgs := []string{"--get-title", "--no-warnings"}
+
+	// Add user-agent for all requests
+	titleArgs = append(titleArgs, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	// Add site-specific headers for problematic sites
+	if isProblematic {
+		if strings.Contains(url, "pornhub.com") {
+			titleArgs = append(titleArgs, "--add-header", "Referer:https://www.pornhub.com/")
+			titleArgs = append(titleArgs, "--add-header", "Origin:https://www.pornhub.com")
+			titleArgs = append(titleArgs, "--add-header", "Cookie:age_verified=1")
+			titleArgs = append(titleArgs, "--add-header", "Cookie:accessAgeDisclaimerPH=1")
+		} else if strings.Contains(url, "xvideos.com") {
+			titleArgs = append(titleArgs, "--add-header", "Referer:https://www.xvideos.com/")
+			titleArgs = append(titleArgs, "--add-header", "Origin:https://www.xvideos.com")
+		} else if strings.Contains(url, "xhamster.com") {
+			titleArgs = append(titleArgs, "--add-header", "Referer:https://xhamster.com/")
+			titleArgs = append(titleArgs, "--add-header", "Origin:https://xhamster.com")
+			titleArgs = append(titleArgs, "--add-header", "Cookie:age_verified=true")
+		}
+	}
+
 	if d.cfg.CookieBrowser != "" {
 		titleArgs = append(titleArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 	}
@@ -583,6 +669,27 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 
 	// Check if it's a playlist by trying to get playlist info
 	playlistArgs := []string{"--flat-playlist", "--print", "playlist,playlist_title,playlist_count", "--no-warnings"}
+
+	// Add user-agent for all requests
+	playlistArgs = append(playlistArgs, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	// Add site-specific headers for problematic sites
+	if isProblematic {
+		if strings.Contains(url, "pornhub.com") {
+			playlistArgs = append(playlistArgs, "--add-header", "Referer:https://www.pornhub.com/")
+			playlistArgs = append(playlistArgs, "--add-header", "Origin:https://www.pornhub.com")
+			playlistArgs = append(playlistArgs, "--add-header", "Cookie:age_verified=1")
+			playlistArgs = append(playlistArgs, "--add-header", "Cookie:accessAgeDisclaimerPH=1")
+		} else if strings.Contains(url, "xvideos.com") {
+			playlistArgs = append(playlistArgs, "--add-header", "Referer:https://www.xvideos.com/")
+			playlistArgs = append(playlistArgs, "--add-header", "Origin:https://www.xvideos.com")
+		} else if strings.Contains(url, "xhamster.com") {
+			playlistArgs = append(playlistArgs, "--add-header", "Referer:https://xhamster.com/")
+			playlistArgs = append(playlistArgs, "--add-header", "Origin:https://xhamster.com")
+			playlistArgs = append(playlistArgs, "--add-header", "Cookie:age_verified=true")
+		}
+	}
+
 	if d.cfg.CookieBrowser != "" {
 		playlistArgs = append(playlistArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
 	}
@@ -629,21 +736,38 @@ func (d *YTDLPDownloader) StreamTorrent(magnetLink string) error {
 	fmt.Fprintf(d.cfg.Stdout, "Streaming torrent with %s...\n", player)
 	fmt.Fprintf(d.cfg.Stdout, "Press Ctrl+C to stop streaming\n\n")
 
-	// Get webtorrent path
-	exePath, _ := os.Executable()
-	depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
-	webtorrentPath := filepath.Join(depsDir, "webtorrent")
-	if runtime.GOOS == "windows" {
-		webtorrentPath += ".cmd"
+	// Find webtorrent-cli
+	webtorrentPath := ""
+
+	// Try system PATH first
+	if path, err := exec.LookPath("webtorrent"); err == nil {
+		webtorrentPath = path
+	} else {
+		// Try dependencies/bin directory (npm/deno install location)
+		exePath, _ := os.Executable()
+		depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
+		binDir := filepath.Join(depsDir, "bin")
+
+		webtorrentBinary := "webtorrent"
+		if runtime.GOOS == "windows" {
+			webtorrentBinary = "webtorrent.cmd"
+		}
+
+		// Check bin directory
+		binPath := filepath.Join(binDir, webtorrentBinary)
+		if _, err := os.Stat(binPath); err == nil {
+			webtorrentPath = binPath
+		} else {
+			// Check dependencies directory
+			depsPath := filepath.Join(depsDir, webtorrentBinary)
+			if _, err := os.Stat(depsPath); err == nil {
+				webtorrentPath = depsPath
+			}
+		}
 	}
 
-	// Check if webtorrent exists
-	if _, err := os.Stat(webtorrentPath); err != nil {
-		// Try system webtorrent
-		if _, err := exec.LookPath("webtorrent"); err != nil {
-			return errors.New("webtorrent-cli not installed")
-		}
-		webtorrentPath = "webtorrent"
+	if webtorrentPath == "" {
+		return errors.New("webtorrent-cli not installed. Install it with: npm install -g webtorrent-cli")
 	}
 
 	// Stream with webtorrent
@@ -809,11 +933,23 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 			}
 			// Include formats with m3u8 as a fallback, prioritize http
 			// For non-YouTube sites, include formats even without explicit height
-			includeFormat := (isAudio && ext != "") || (!isAudio && height > 0)
-			if !includeFormat && !isAudio && !strings.Contains(url, "youtube.com") && ext != "" {
+			includeFormat := (isAudio && ext != "") || (!isAudio && height > 0 && ext != "")
+			if !includeFormat && !isAudio && !strings.Contains(url, "youtube.com") && ext != "" && protocol != "" {
 				// For non-YouTube sites, include video formats even without height
 				includeFormat = true
 				height = 720 // Default height for unknown formats
+			}
+
+			// Filter out invalid formats with missing critical info
+			if includeFormat && !isAudio {
+				// Must have extension and either height > 0 or protocol
+				if ext == "" || (height == 0 && protocol == "") {
+					includeFormat = false
+				}
+				// Filter out extremely low resolutions that are likely errors
+				if height > 0 && height < 144 {
+					includeFormat = false
+				}
 			}
 
 			if includeFormat {
@@ -924,8 +1060,6 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				"--retries", "10",
 				"--retry-sleep", "5",
 				"--socket-timeout", "60",
-				"--http-timeout", "60",
-				"--fragment-timeout", "60",
 				"--sleep-interval", "1",
 				"--max-sleep-interval", "3",
 			}
@@ -943,31 +1077,13 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				"--fragment-retries", "5",
 				"--retries", "3",
 				"--socket-timeout", "30",
-				"--http-timeout", "30",
-				"--fragment-timeout", "30",
 			}
 		}
 
 		// Add common arguments for both cases
 		cmdArgs = append(cmdArgs,
-			"--no-cache-dir",
-			"--no-part",
 			"--no-mtime",
-			"--no-write-thumbnail",
-			"--no-write-description",
-			"--no-write-info-json",
-			"--no-write-subtitles",
-			"--no-write-auto-sub",
-			"--no-write-annotations",
-			"--no-write-comments",
-			"--no-write-playlist-metafiles",
-			"--no-write-embed-subs",
-			"--no-write-embed-chapters",
-			"--no-write-embed-info-json",
-			"--no-write-embed-thumbnail",
-			"--no-write-embed-metadata",
-			"--no-write-playlist-json",
-			"--no-write-playlist-infojson",
+			"--no-playlist",
 			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 			"--output", tempDir+"/"+d.cfg.OutputTemplate,
 		)
@@ -1042,7 +1158,12 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		} else if d.cfg.Resolution != "" {
 			cmdArgs = append(cmdArgs, "--format", d.cfg.Resolution+"+bestaudio/best")
 		} else {
-			cmdArgs = append(cmdArgs, "--format", "bestvideo+bestaudio/best")
+			// Use more compatible format selection for problematic sites
+			if isProblematic {
+				cmdArgs = append(cmdArgs, "--format", "best[height<=1080]/best")
+			} else {
+				cmdArgs = append(cmdArgs, "--format", "bestvideo+bestaudio/best")
+			}
 		}
 		cmdArgs = append(cmdArgs, args...)
 
@@ -1084,15 +1205,8 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 					"--fragment-retries", "5",
 					"--retries", "3",
 					"--socket-timeout", "30",
-					"--http-timeout", "30",
-					"--no-cache-dir",
-					"--no-part",
 					"--no-mtime",
-					"--no-write-thumbnail",
-					"--no-write-description",
-					"--no-write-info-json",
-					"--no-write-subtitles",
-					"--no-write-auto-sub",
+					"--no-playlist",
 					"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 					"--output", tempDir + "/" + d.cfg.OutputTemplate,
 				}
