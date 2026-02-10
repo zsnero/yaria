@@ -45,12 +45,20 @@ type YTDLPDownloader struct {
 }
 
 func New(cfg *config.Config) (*YTDLPDownloader, error) {
-	// Create dependencies folder
-	exePath, err := os.Executable()
-	if err != nil {
-		exePath, _ = os.Getwd() // Fallback to current directory
+	// Create dependencies folder in a persistent location
+	var depsDir string
+
+	// Try to use user's home directory for dependencies
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		// Use ~/.yaria/dependencies for persistent storage
+		depsDir = filepath.Join(homeDir, ".yaria", "dependencies")
+	} else {
+		// Fallback to current working directory
+		cwd, _ := os.Getwd()
+		depsDir = filepath.Join(cwd, "dependencies")
 	}
-	depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
+
 	if err := os.MkdirAll(depsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create dependencies directory: %v", err)
 	}
@@ -411,52 +419,23 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	if !webtorrentInstalled {
 		fmt.Fprintf(cfg.Stderr, "Installing webtorrent-cli for torrent streaming...\n")
 
-		// Try deno first (if available)
-		denoInstalled := false
-		if _, err := exec.LookPath(denoBinary); err == nil {
-			denoInstalled = true
-		} else if _, err := os.Stat(denoPath); err == nil {
-			denoInstalled = true
-		}
+		// Use npm for installation (deno has issues with Node-API addons)
+		if _, err := exec.LookPath("npm"); err == nil {
+			fmt.Fprintf(cfg.Stderr, "Installing webtorrent-cli via npm...\n")
 
-		if denoInstalled {
-			fmt.Fprintf(cfg.Stderr, "Trying to install webtorrent-cli via deno...\n")
-			denoCmd := denoPath
-			if _, err := exec.LookPath(denoBinary); err == nil {
-				denoCmd = denoBinary
-			}
-
-			// Create bin directory in dependencies
-			binDir := filepath.Join(depsDir, "bin")
-			os.MkdirAll(binDir, 0o755)
-
-			installCmd := exec.Command(denoCmd, "install", "-g", "--allow-all", "--root", depsDir, "-n", "webtorrent", "npm:webtorrent-cli")
-			output, err := installCmd.CombinedOutput()
+			// Install to dependencies folder
+			installCmd := exec.Command("npm", "install", "-g", "--prefix", depsDir, "webtorrent-cli")
+			installCmd.Stdout = cfg.Stderr
+			installCmd.Stderr = cfg.Stderr
+			err := installCmd.Run()
 			if err == nil {
-				fmt.Fprintf(cfg.Stderr, "Installed webtorrent-cli via deno successfully\n")
+				fmt.Fprintf(cfg.Stderr, "Installed webtorrent-cli successfully\n")
 				webtorrentInstalled = true
 			} else {
-				fmt.Fprintf(cfg.Stderr, "Deno install failed: %v\n%s\n", err, string(output))
+				fmt.Fprintf(cfg.Stderr, "npm install failed: %v\n", err)
 			}
-		}
-
-		// Try npm as fallback
-		if !webtorrentInstalled {
-			if _, err := exec.LookPath("npm"); err == nil {
-				fmt.Fprintf(cfg.Stderr, "Trying to install webtorrent-cli via npm...\n")
-
-				// Install to dependencies folder
-				installCmd := exec.Command("npm", "install", "-g", "--prefix", depsDir, "webtorrent-cli")
-				output, err := installCmd.CombinedOutput()
-				if err == nil {
-					fmt.Fprintf(cfg.Stderr, "Installed webtorrent-cli via npm successfully\n")
-					webtorrentInstalled = true
-				} else {
-					fmt.Fprintf(cfg.Stderr, "npm install failed: %v\n%s\n", err, string(output))
-				}
-			} else {
-				fmt.Fprintf(cfg.Stderr, "npm not found, skipping webtorrent-cli installation\n")
-			}
+		} else {
+			fmt.Fprintf(cfg.Stderr, "npm not found, skipping webtorrent-cli installation\n")
 		}
 
 		if !webtorrentInstalled {
@@ -743,9 +722,16 @@ func (d *YTDLPDownloader) StreamTorrent(magnetLink string) error {
 	if path, err := exec.LookPath("webtorrent"); err == nil {
 		webtorrentPath = path
 	} else {
-		// Try dependencies/bin directory (npm/deno install location)
-		exePath, _ := os.Executable()
-		depsDir := filepath.Join(filepath.Dir(exePath), "dependencies")
+		// Try dependencies/bin directory (npm install location)
+		// Use same persistent location as New() function
+		var depsDir string
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			depsDir = filepath.Join(homeDir, ".yaria", "dependencies")
+		} else {
+			cwd, _ := os.Getwd()
+			depsDir = filepath.Join(cwd, "dependencies")
+		}
 		binDir := filepath.Join(depsDir, "bin")
 
 		webtorrentBinary := "webtorrent"
