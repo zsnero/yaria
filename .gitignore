@@ -1,0 +1,19 @@
+# Binaries (root only)
+/yaria
+/yaria-*
+*.exe
+
+# Runtime
+dependencies/
+.yaria/
+
+# Mantorex (proprietary)
+internal/mantorex/
+internal/pro/mantorex.go
+pkg/mantorex/
+
+# Private docs
+DEVELOPER_GUIDE.md
+DOCUMENTATION.md
+WEBSITE_PROMPT.md
+WEBUI_PLAN.md

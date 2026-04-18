@@ -1,0 +1,153 @@
+# Yaria
+
+The fastest video and audio downloader for your terminal. Downloads from 1000+ sites with multi-connection acceleration.
+
+## Features
+
+- Downloads from **YouTube, Instagram, Twitter/X, TikTok, Vimeo, Reddit**, and 1000+ more sites
+- **Blazing fast** -- aria2c multi-connection acceleration with 32 concurrent fragments
+- **Interactive TUI** -- format selection, resolution picker, download progress
+- **Playlist support** -- download entire playlists with one command
+- **Audio extraction** -- download audio-only in MP3 or other formats
+- **Background daemon** -- queue downloads and let them run in the background
+- **Auto-dependency management** -- downloads yt-dlp and aria2c automatically if not installed
+- **Cookie support** -- auto-detects your browser for age-restricted and login-required content
+- **Cross-platform** -- Linux, macOS, Windows
+
+## Quick Start
+
+```bash
+# Download a video
+yaria https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# Interactive mode
+yaria download
+
+# Download audio only
+yaria download --extract-audio https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+## Installation
+
+### Build from source
+
+```bash
+git clone https://github.com/YOUR_USERNAME/yaria.git
+cd yaria
+make build
+```
+
+### Install to PATH
+
+```bash
+make install
+```
+
+## Usage
+
+```
+yaria                              Launch interactive menu
+yaria <URL>                        Download video/audio (shortcut)
+yaria download                     Interactive video downloader TUI
+yaria download <URL>               Download video/audio from URL
+yaria download <magnet-link>       Stream magnet link via webtorrent
+yaria --help                       Show help
+yaria --version                    Show version
+```
+
+## Commands
+
+| Command                | Description                                           |
+| ---------------------- | ----------------------------------------------------- |
+| `yaria`                | Interactive menu                                      |
+| `yaria download`       | Video downloader TUI with format/resolution selection |
+| `yaria download <URL>` | Direct CLI download                                   |
+| `yaria <URL>`          | Shortcut for `yaria download <URL>`                   |
+| `yaria status`         | Show license and device info                          |
+| `yaria --help`         | Help                                                  |
+| `yaria --version`      | Version                                               |
+
+## Supported Sites
+
+Yaria supports all 1000+ sites that yt-dlp supports, including:
+
+YouTube, Instagram, Twitter/X, TikTok, Facebook, Vimeo, Dailymotion, Twitch, Reddit, SoundCloud, Bilibili, NicoNico, PornHub, XVideos, XHamster, and many more.
+
+Sites with special handling get optimized headers, cookie management, and retry logic automatically.
+
+## How It Works
+
+1. **Metadata** -- fetches video info in a single optimized call
+2. **Format selection** -- lists available qualities (4K, 1080p, 720p, audio-only)
+3. **Download** -- uses aria2c for multi-connection acceleration (32 splits, 16 connections per server, 128MB disk cache)
+4. **Retry** -- automatic retries with fallback formats on failure
+
+## Dependencies
+
+Yaria auto-downloads these if not installed:
+
+| Dependency | Purpose                                |
+| ---------- | -------------------------------------- |
+| yt-dlp     | Video extraction engine                |
+| aria2c     | Multi-connection download acceleration |
+
+If auto-download fails, install manually:
+
+```bash
+# Arch Linux
+sudo pacman -S yt-dlp aria2
+
+# Ubuntu/Debian
+sudo apt install yt-dlp aria2
+
+# macOS
+brew install yt-dlp aria2
+
+# Windows
+winget install yt-dlp aria2
+```
+
+## Configuration
+
+All settings are stored in `~/.config/yaria/app.yaml`:
+
+```yaml
+yaria:
+  theme: Rainbow
+```
+
+The config file is created automatically on first run.
+
+## Keyboard Shortcuts (TUI)
+
+| Key          | Action        |
+| ------------ | ------------- |
+| `up` / `k`   | Navigate up   |
+| `down` / `j` | Navigate down |
+| `enter`      | Select        |
+| `esc`        | Go back       |
+| `ctrl+c`     | Quit          |
+
+## Pro Features (coming soon)
+
+Yaria Pro adds **Mantorex** -- a torrent search and streaming engine:
+
+- Search 8 torrent providers simultaneously
+- Stream torrents directly in your browser (WebUI)
+- Stream to mpv/vlc (TUI)
+- Background torrent download daemon
+- Library with resume playback
+
+## Build
+
+```bash
+make build          # Community edition
+make build-all      # Cross-compile for all platforms
+make tidy           # go mod tidy
+make vet            # Static analysis
+make clean          # Remove binaries
+```
+
+## License
+
+[MIT](LICENSE)
