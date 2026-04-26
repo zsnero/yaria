@@ -2,6 +2,7 @@
 /yaria
 /yaria-*
 *.exe
+cp.sh
 
 # Runtime
 dependencies/
