@@ -36,13 +36,14 @@ type Response struct {
 
 // DownloadInfo represents the status of a single download
 type DownloadInfo struct {
-	ID      string  `json:"id"`
-	URL     string  `json:"url"`
-	Title   string  `json:"title"`
-	Dir     string  `json:"dir"`
-	State   string  `json:"state"` // "downloading", "paused", "complete", "error", "preparing"
-	Percent float64 `json:"percent"`
-	Speed   string  `json:"speed"`
-	ETA     string  `json:"eta"`
-	Error   string  `json:"error,omitempty"`
+	ID        string  `json:"id"`
+	URL       string  `json:"url"`
+	Title     string  `json:"title"`
+	Dir       string  `json:"dir"`
+	State     string  `json:"state"` // "downloading", "paused", "complete", "error", "preparing"
+	Percent   float64 `json:"percent"`
+	Speed     string  `json:"speed"`
+	ETA       string  `json:"eta"`
+	Error     string  `json:"error,omitempty"`
+	StatusMsg string  `json:"status_msg,omitempty"` // current activity text
 }

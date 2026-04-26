@@ -159,6 +159,12 @@ func Run(args []string) {
 
 	// CLI MODE - fetch metadata and download directly
 	url := args[0]
+	// Clean shell-escaped URLs
+	url = strings.ReplaceAll(url, "\\?", "?")
+	url = strings.ReplaceAll(url, "\\=", "=")
+	url = strings.ReplaceAll(url, "\\&", "&")
+	url = strings.ReplaceAll(url, "\\#", "#")
+	args[0] = url
 	playlistInfo, videoTitle, err := dl.GetMetadata(args)
 	if err != nil {
 		log.Error("Error: Failed to fetch metadata: %v", err)

@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"bufio"
-	"bytes"
 	"crypto/sha1"
 	"fmt"
 	"os"
@@ -13,6 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"yaria/internal/yaria/cookies"
+	"yaria/internal/yaria/downloader"
+
+	"github.com/creack/pty"
 )
 
 type managedDownload struct {
@@ -23,6 +26,7 @@ type managedDownload struct {
 	eta           string
 	state         string // "preparing", "downloading", "paused", "complete", "exists", "error"
 	errMsg        string
+	statusMsg     string // current activity: "Extracting URL...", "Solving JS challenges...", etc.
 	cmd           *exec.Cmd
 	cancel        func() // kills the yt-dlp process
 	alreadyExists bool   // yt-dlp reported file already downloaded
@@ -181,15 +185,16 @@ func (m *Manager) List() []DownloadInfo {
 	var out []DownloadInfo
 	for _, md := range m.downloads {
 		out = append(out, DownloadInfo{
-			ID:      md.entry.ID,
-			URL:     md.entry.URL,
-			Title:   md.entry.Title,
-			Dir:     md.entry.Dir,
-			State:   md.state,
-			Percent: md.percent,
-			Speed:   md.speed,
-			ETA:     md.eta,
-			Error:   md.errMsg,
+			ID:        md.entry.ID,
+			URL:       md.entry.URL,
+			Title:     md.entry.Title,
+			Dir:       md.entry.Dir,
+			State:     md.state,
+			Percent:   md.percent,
+			Speed:     md.speed,
+			ETA:       md.eta,
+			Error:     md.errMsg,
+			StatusMsg: md.statusMsg,
 		})
 	}
 	return out
@@ -204,23 +209,6 @@ func (m *Manager) Close() {
 			md.cancel()
 		}
 	}
-}
-
-// splitCRLF splits on \r or \n for real-time yt-dlp progress
-func splitCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
-		if data[i] == '\r' {
-			if i+1 < len(data) && data[i+1] == '\n' {
-				return i + 2, data[:i], nil
-			}
-			return i + 1, data[:i], nil
-		}
-		return i + 1, data[:i], nil
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
 }
 
 func (m *Manager) runDownload(md *managedDownload) {
@@ -253,7 +241,6 @@ func (m *Manager) runDownload(md *managedDownload) {
 		"--no-color",
 		"--extractor-retries", "2",
 		"--fragment-retries", "3",
-		"--progress-template", "%(progress)s %(progress._total_bytes_str)s %(progress._downloaded_bytes_str)s %(progress._speed_str)s %(progress._eta_str)s",
 	}
 
 	// Problematic sites get reduced concurrency
@@ -286,7 +273,6 @@ func (m *Manager) runDownload(md *managedDownload) {
 			"--fragment-retries", "10",
 			"--retries", "10",
 			"--retry-sleep", "5",
-			"--progress-template", "%(progress)s %(progress._total_bytes_str)s %(progress._downloaded_bytes_str)s %(progress._speed_str)s %(progress._eta_str)s",
 		}
 	}
 
@@ -319,6 +305,14 @@ func (m *Manager) runDownload(md *managedDownload) {
 		}
 	}
 
+	// Cookie handling: kooky first, yt-dlp fallback
+	cookieBrowser := entry.CookieBrowser
+	if cookieBrowser == "" {
+		cookieBrowser = downloader.DetectBrowser()
+	}
+	cookieArgs := cookies.GetYTDLPCookieArgs(entry.URL, cookieBrowser)
+	cmdArgs = append(cmdArgs, cookieArgs...)
+
 	cmdArgs = append(cmdArgs, entry.URL)
 
 	if entry.UseAria2c {
@@ -328,43 +322,56 @@ func (m *Manager) runDownload(md *managedDownload) {
 		}
 		args := entry.Aria2cArgs
 		if args == "" {
-			args = "--max-connection-per-server=16 --min-split-size=1M --split=32 --max-concurrent-downloads=16 --file-allocation=none"
+			args = "--max-connection-per-server=16 --min-split-size=1M --split=32 --max-concurrent-downloads=16 --file-allocation=none --summary-interval=1"
 		}
 		cmdArgs = append(cmdArgs, "--downloader", aria2Cmd, "--downloader-args", "aria2c:"+args)
 	}
 
 	cmd := exec.Command(ytDlpCmd, cmdArgs...)
-	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
+	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1", "TERM=dumb")
 
-	stdout, err := cmd.StdoutPipe()
+	// Use a PTY (pseudo-terminal) so aria2c and yt-dlp think they're
+	// writing to a real terminal. This disables their pipe buffering
+	// and gives us real-time progress output.
+	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		m.setError(md, err.Error())
-		return
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		m.setError(md, err.Error())
-		return
-	}
+		// Fallback to pipes if PTY fails (e.g., on Windows)
+		cmd2 := exec.Command(ytDlpCmd, cmdArgs...)
+		cmd2.Env = cmd.Env
+		stdout, err2 := cmd2.StdoutPipe()
+		if err2 != nil {
+			m.setError(md, err2.Error())
+			return
+		}
+		stderr, err2 := cmd2.StderrPipe()
+		if err2 != nil {
+			m.setError(md, err2.Error())
+			return
+		}
+		if err2 := cmd2.Start(); err2 != nil {
+			m.setError(md, err2.Error())
+			return
+		}
+		cmd = cmd2
+		m.mu.Lock()
+		md.cmd = cmd
+		md.cancel = func() { _ = cmd.Process.Kill() }
+		m.mu.Unlock()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); m.parseProgress(md, stdout) }()
+		go func() { defer wg.Done(); m.parseProgress(md, stderr) }()
+		wg.Wait()
+	} else {
+		m.mu.Lock()
+		md.cmd = cmd
+		md.cancel = func() { _ = cmd.Process.Kill() }
+		m.mu.Unlock()
 
-	if err := cmd.Start(); err != nil {
-		m.setError(md, err.Error())
-		return
+		// PTY merges stdout+stderr into a single stream
+		m.parseProgress(md, ptmx)
+		ptmx.Close()
 	}
-
-	m.mu.Lock()
-	md.cmd = cmd
-	md.cancel = func() {
-		_ = cmd.Process.Kill()
-	}
-	m.mu.Unlock()
-
-	// Parse progress from both stdout and stderr
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); m.parseProgress(md, stdout) }()
-	go func() { defer wg.Done(); m.parseProgress(md, stderr) }()
-	wg.Wait()
 
 	err = cmd.Wait()
 
@@ -403,14 +410,11 @@ func (m *Manager) setError(md *managedDownload, msg string) {
 }
 
 func (m *Manager) parseProgress(md *managedDownload, reader interface{ Read([]byte) (int, error) }) {
-	scanner := bufio.NewScanner(reader)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-	scanner.Split(splitCRLF)
-
 	ytdlpProgressRegex := regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%`)
+	// aria2c format: [#hexid SIZE/TOTAL(PERCENT%) CN:N DL:SPEED ETA:TIME]
 	aria2cProgressRegex := regexp.MustCompile(`\((\d+)%\)`)
-	speedRegex := regexp.MustCompile(`(?:DL:|at\s+)(\d+\.?\d*\w+/?s)`)
+	aria2cFullRegex := regexp.MustCompile(`\[#[0-9a-f]+\s+.*?\((\d+)%\).*?DL:([0-9.]+\S+)(?:.*?ETA:(\S+))?`)
+	speedRegex := regexp.MustCompile(`(?:DL:|at\s+)(\d+\.?\d*\S+/s)`)
 	etaRegex := regexp.MustCompile(`ETA[:\s]+(\S+)`)
 	bytesProgressRegex := regexp.MustCompile(`([0-9.]+)\s*([kKmMgGtT]?i?B)/([0-9.]+)\s*([kKmMgGtT]?i?B)`)
 
@@ -438,26 +442,42 @@ func (m *Manager) parseProgress(md *managedDownload, reader interface{ Read([]by
 		return 1
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	// Read byte-by-byte to avoid pipe buffering issues on Linux.
+	// bufio.Scanner relies on the OS delivering data promptly, but Linux
+	// pipe buffers (4-64KB) hold yt-dlp's \r-based progress until enough
+	// bytes accumulate. Reading one byte at a time and splitting on \r or
+	// \n gives real-time progress updates.
+	var lineBuf []byte
+	oneByte := make([]byte, 1)
+
+	processLine := func(line string) {
 		if line == "" {
-			continue
+			return
 		}
 
-		// Detect "already been downloaded" or "already been recorded"
 		if strings.Contains(line, "has already been downloaded") ||
 			strings.Contains(line, "has already been recorded in the archive") {
 			m.mu.Lock()
 			md.alreadyExists = true
 			m.mu.Unlock()
-			continue
+			return
 		}
 
 		var percent float64
 		var speed, eta string
 		matched := false
 
-		if matches := ytdlpProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
+		// Try aria2c full format first: [#hex SIZE/TOTAL(PCT%) CN:N DL:SPEED ETA:TIME]
+		if am := aria2cFullRegex.FindStringSubmatch(line); len(am) >= 2 {
+			percent, _ = strconv.ParseFloat(am[1], 64)
+			if len(am) >= 3 && am[2] != "" {
+				speed = am[2] + "/s"
+			}
+			if len(am) >= 4 && am[3] != "" {
+				eta = am[3]
+			}
+			matched = true
+		} else if matches := ytdlpProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
 			percent, _ = strconv.ParseFloat(matches[1], 64)
 			matched = true
 		} else if matches := aria2cProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
@@ -475,20 +495,87 @@ func (m *Manager) parseProgress(md *managedDownload, reader interface{ Read([]by
 		}
 
 		if matched {
-			if sm := speedRegex.FindStringSubmatch(line); len(sm) >= 2 {
-				speed = sm[1]
+			// For non-aria2c lines, try to extract speed/eta separately
+			if speed == "" {
+				if sm := speedRegex.FindStringSubmatch(line); len(sm) >= 2 {
+					speed = sm[1]
+				}
 			}
-			if em := etaRegex.FindStringSubmatch(line); len(em) >= 2 {
-				eta = em[1]
+			if eta == "" {
+				if em := etaRegex.FindStringSubmatch(line); len(em) >= 2 {
+					eta = em[1]
+				}
 			}
 			m.mu.Lock()
 			md.percent = percent
 			md.speed = speed
 			md.eta = eta
+			md.statusMsg = ""
 			if md.state != "paused" {
 				md.state = "downloading"
 			}
 			m.mu.Unlock()
+			return
+		}
+
+		// Capture informational status messages from yt-dlp
+		m.mu.Lock()
+		if strings.Contains(line, "Extracting URL") {
+			md.statusMsg = "Extracting video info..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "Downloading webpage") {
+			md.statusMsg = "Downloading webpage..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "Solving JS challenges") || strings.Contains(line, "jsc:deno") {
+			md.statusMsg = "Solving JS challenges..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "Downloading player") {
+			md.statusMsg = "Downloading player..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "player API") || strings.Contains(line, "API JSON") {
+			md.statusMsg = "Fetching player API..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "m3u8 information") {
+			md.statusMsg = "Fetching stream info..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "Downloading") && strings.Contains(line, "format") {
+			md.statusMsg = "Preparing download..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "Destination:") {
+			md.statusMsg = "Starting download..."
+			md.state = "downloading"
+		} else if strings.Contains(line, "Extracting cookies") || strings.Contains(line, "Extracted") {
+			md.statusMsg = "Extracting cookies..."
+			md.state = "preparing"
+		} else if strings.Contains(line, "[Merger]") {
+			md.statusMsg = "Merging video + audio..."
+			md.state = "downloading"
+			md.percent = 99
+		} else if strings.Contains(line, "Deleting original") {
+			md.statusMsg = "Cleaning up..."
+		}
+		m.mu.Unlock()
+	}
+
+	for {
+		n, err := reader.Read(oneByte)
+		if n == 1 {
+			b := oneByte[0]
+			if b == '\r' || b == '\n' {
+				if len(lineBuf) > 0 {
+					processLine(string(lineBuf))
+					lineBuf = lineBuf[:0]
+				}
+			} else {
+				lineBuf = append(lineBuf, b)
+			}
+		}
+		if err != nil {
+			// Process any remaining data
+			if len(lineBuf) > 0 {
+				processLine(string(lineBuf))
+			}
+			break
 		}
 	}
 }

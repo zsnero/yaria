@@ -19,6 +19,18 @@ func MantorexDebug() bool              { return appconfig.MantorexDebug() }
 func TMDBApiKey() string               { return appconfig.TMDBApiKey() }
 func SetTMDBApiKey(key string) error   { return appconfig.SetTMDBApiKey(key) }
 
+// --- Proxy settings ---
+
+func ProxyType() string              { return appconfig.ProxyType() }
+func SetProxyType(t string) error    { return appconfig.SetProxyType(t) }
+func ProxyAddr() string              { return appconfig.ProxyAddr() }
+func SetProxyAddr(addr string) error { return appconfig.SetProxyAddr(addr) }
+
+// --- Speed limit ---
+
+func SpeedLimit() int64                { return appconfig.SpeedLimit() }
+func SetSpeedLimit(limit int64) error  { return appconfig.SetSpeedLimit(limit) }
+
 type MantorexConfig = appconfig.MantorexConfig
 
 func GetMantorexConfig() MantorexConfig { return appconfig.GetMantorexConfig() }

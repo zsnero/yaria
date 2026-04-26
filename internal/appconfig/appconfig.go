@@ -166,6 +166,49 @@ func SetTMDBApiKey(key string) error {
 	return Save()
 }
 
+// --- Proxy settings ---
+
+// ProxyType returns the configured proxy type ("none", "http", "socks5").
+func ProxyType() string {
+	Init()
+	return v.GetString("network.proxy_type")
+}
+
+// SetProxyType sets and saves the proxy type.
+func SetProxyType(t string) error {
+	Init()
+	v.Set("network.proxy_type", t)
+	return Save()
+}
+
+// ProxyAddr returns the configured proxy address (e.g. "http://127.0.0.1:8080").
+func ProxyAddr() string {
+	Init()
+	return v.GetString("network.proxy_addr")
+}
+
+// SetProxyAddr sets and saves the proxy address.
+func SetProxyAddr(addr string) error {
+	Init()
+	v.Set("network.proxy_addr", addr)
+	return Save()
+}
+
+// --- Speed limit ---
+
+// SpeedLimit returns the download speed limit in bytes/sec (0 = unlimited).
+func SpeedLimit() int64 {
+	Init()
+	return v.GetInt64("network.speed_limit")
+}
+
+// SetSpeedLimit sets and saves the download speed limit in bytes/sec.
+func SetSpeedLimit(limit int64) error {
+	Init()
+	v.Set("network.speed_limit", limit)
+	return Save()
+}
+
 // --- Mantorex compat layer (for existing code) ---
 
 // MantorexConfig holds all Mantorex settings in one struct

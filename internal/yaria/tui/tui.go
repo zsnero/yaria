@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -15,12 +13,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"yaria/internal/yaria/clean"
 	"yaria/internal/yaria/config"
 	"yaria/internal/yaria/daemon"
 	"yaria/internal/yaria/deps"
+	"yaria/internal/yaria/cookies"
 	"yaria/internal/yaria/downloader"
 	"yaria/internal/yaria/logger"
 
@@ -155,25 +155,6 @@ type Model struct {
 	cleanErrs      []error
 }
 
-// Splits on either '\r' or '\n' so we capture carriage-return progress updates
-func splitCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
-		// handle CRLF (\r\n)
-		if data[i] == '\r' {
-			if i+1 < len(data) && data[i+1] == '\n' {
-				return i + 2, data[:i], nil
-			}
-			return i + 1, data[:i], nil
-		}
-		// LF
-		return i + 1, data[:i], nil
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
-}
-
 func New(cfg *config.Config, log logger.Logger) *Model {
 	// Detect terminal capabilities
 	isKitty := false
@@ -207,7 +188,13 @@ func (m *Model) SetDownloader(dl downloader.Downloader) {
 }
 
 func (m *Model) Run(url, title string) error {
+	// Clean shell-escaped URLs
+	url = strings.ReplaceAll(url, "\\?", "?")
+	url = strings.ReplaceAll(url, "\\=", "=")
+	url = strings.ReplaceAll(url, "\\&", "&")
+	url = strings.ReplaceAll(url, "\\#", "#")
 	m.url = url
+	m.URL = url
 	m.Title = title
 	if url != "" {
 		m.state = formatState // Skip to format selection if URL provided
@@ -459,7 +446,6 @@ var quotes = []string{
 
 // getRandomQuote returns a random funny quote
 func getRandomQuote() string {
-	rand.Seed(time.Now().UnixNano())
 	return quotes[rand.Intn(len(quotes))]
 }
 
@@ -687,6 +673,12 @@ func (m *Model) updateURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errorMsg = "No URL provided"
 				return m, nil
 			}
+			// Clean shell-escaped URLs (e.g. pasted from terminal with backslashes)
+			m.URL = strings.ReplaceAll(m.URL, "\\?", "?")
+			m.URL = strings.ReplaceAll(m.URL, "\\=", "=")
+			m.URL = strings.ReplaceAll(m.URL, "\\&", "&")
+			m.URL = strings.ReplaceAll(m.URL, "\\#", "#")
+			m.urlInput = m.URL
 			m.url = m.URL
 			m.errorMsg = ""
 			m.state = metadataLoadingState
@@ -730,17 +722,40 @@ func (m *Model) fetchMetadata() tea.Cmd {
 // Checks which supported browsers are available
 func detectBrowsers() []string {
 	var browsers []string
-	supportedBrowsers := []string{"firefox", "chrome", "chromium", "brave", "edge", "opera", "safari"}
 
-	for _, browser := range supportedBrowsers {
+	// Map binary names to yt-dlp compatible cookie browser names.
+	// yt-dlp supports: brave, chrome, chromium, edge, firefox, opera, safari, vivaldi, whale
+	// Firefox-based forks (librewolf, waterfox, etc.) must use "firefox" with their profile path.
+	type browserDef struct {
+		binary string // binary name to check in PATH
+		ytdlp  string // name to pass to --cookies-from-browser
+	}
+
+	defs := []browserDef{
+		{"librewolf", "firefox"},  // Librewolf uses Firefox cookie format
+		{"firefox", "firefox"},
+		{"chrome", "chrome"},
+		{"google-chrome-stable", "chrome"},
+		{"chromium", "chromium"},
+		{"brave", "brave"},
+		{"brave-browser", "brave"},
+		{"microsoft-edge", "edge"},
+		{"opera", "opera"},
+		{"vivaldi", "vivaldi"},
+		{"safari", "safari"},
+	}
+
+	seen := make(map[string]bool)
+	for _, def := range defs {
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			cmd = exec.Command("where", browser)
+			cmd = exec.Command("where", def.binary)
 		} else {
-			cmd = exec.Command("which", browser)
+			cmd = exec.Command("which", def.binary)
 		}
-		if err := cmd.Run(); err == nil {
-			browsers = append(browsers, browser)
+		if err := cmd.Run(); err == nil && !seen[def.ytdlp] {
+			browsers = append(browsers, def.ytdlp)
+			seen[def.ytdlp] = true
 		}
 	}
 	return browsers
@@ -758,18 +773,19 @@ func (m *Model) updateMetadataLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case metadataFetchedMsg:
 		if msg.err != nil {
-			// Check if error is due to age restriction
+			// Check if error is due to age restriction / bot detection
 			errStr := msg.err.Error()
-			if strings.Contains(errStr, "Sign in to confirm") || strings.Contains(errStr, "Age-restricted") {
+			if strings.Contains(errStr, "Sign in to confirm") || strings.Contains(errStr, "Age-restricted") || strings.Contains(errStr, "not a bot") {
 				if !m.needsBrowser && m.cfg.CookieBrowser == "" {
 					m.needsBrowser = true
 					return m, m.detectBrowsersAsync()
 				}
-				m.errorMsg = fmt.Sprintf("Failed to fetch metadata: %v", msg.err)
-				return m, tea.Quit
 			}
-			m.errorMsg = fmt.Sprintf("Failed to fetch metadata: %v", msg.err)
-			return m, tea.Quit
+			// Go back to URL input and show the error instead of quitting
+			m.errorMsg = fmt.Sprintf("Error: %v", msg.err)
+			m.state = urlState
+			m.cursor = 0
+			return m, nil
 		}
 		m.PlaylistInfo = msg.playlistInfo
 		m.Title = msg.title
@@ -786,7 +802,9 @@ func (m *Model) updateMetadataLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.availableBrowsers = msg.browsers
 		if len(m.availableBrowsers) == 0 {
 			m.errorMsg = "Age-restricted video. No supported browsers found for authentication."
-			return m, tea.Quit
+			m.state = urlState
+			m.cursor = 0
+			return m, nil
 		}
 		m.state = browserSelectionState
 		m.cursor = 0
@@ -875,6 +893,7 @@ func (m *Model) updateFormat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor == 0 {
 				m.cfg.IsAudioOnly = false
 				m.state = formatsLoadingState
+				m.state = formatsLoadingState
 				m.loadingStart = time.Now()
 				m.loadingDots = "."
 				return m, tea.Batch(
@@ -911,7 +930,9 @@ func (m *Model) updateFormatsLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case formatsFetchedMsg:
 		if msg.err != nil {
 			m.errorMsg = fmt.Sprintf("Failed to fetch formats: %v", msg.err)
-			return m, tea.Quit
+			m.state = urlState
+			m.cursor = 0
+			return m, nil
 		}
 		m.formats = msg.formats
 		m.videoFormats = []downloader.Format{}
@@ -1158,7 +1179,6 @@ func (m *Model) runDownload() {
 		"--no-color",
 		"--extractor-retries", "2",
 		"--fragment-retries", "3",
-		"--progress-template", "%(progress)s %(progress._total_bytes_str)s %(progress._downloaded_bytes_str)s %(progress._speed_str)s %(progress._eta_str)s",
 	}
 
 	problematicSites := []string{
@@ -1192,7 +1212,6 @@ func (m *Model) runDownload() {
 			"--fragment-retries", "10",
 			"--retries", "10",
 			"--retry-sleep", "5",
-			"--progress-template", "%(progress)s %(progress._total_bytes_str)s %(progress._downloaded_bytes_str)s %(progress._speed_str)s %(progress._eta_str)s",
 		}
 	}
 
@@ -1204,9 +1223,13 @@ func (m *Model) runDownload() {
 	}
 	cmdArgs = append(cmdArgs, "--output", outputPath)
 
-	if m.cfg.CookieBrowser != "" {
-		cmdArgs = append(cmdArgs, "--cookies-from-browser", m.cfg.CookieBrowser)
+	// Extract cookies: kooky (pure Go) first, yt-dlp --cookies-from-browser fallback
+	cookieBrowser := m.cfg.CookieBrowser
+	if cookieBrowser == "" {
+		cookieBrowser = downloader.DetectBrowser()
 	}
+	cookieArgs := cookies.GetYTDLPCookieArgs(m.url, cookieBrowser)
+	cmdArgs = append(cmdArgs, cookieArgs...)
 
 	cmdArgs = append(cmdArgs, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
@@ -1275,7 +1298,12 @@ func (m *Model) runDownload() {
 		}
 	}
 
-	cmdArgs = append(cmdArgs, m.Args...)
+	// Add URL - m.Args may contain it (RunDownloadOnly mode) or m.url has it (interactive mode)
+	if len(m.Args) > 0 {
+		cmdArgs = append(cmdArgs, m.Args...)
+	} else if m.url != "" {
+		cmdArgs = append(cmdArgs, m.url)
+	}
 
 	if m.cfg.UseAria2c {
 		aria2Cmd := "aria2c"
@@ -1304,27 +1332,48 @@ func (m *Model) runDownload() {
 		return
 	}
 
-	go m.parseOutput(stdout)
-	go m.parseOutput(stderr)
+	var lastErr string
+	var lastErrMu sync.Mutex
+	captureErr := func(line string) {
+		if strings.Contains(line, "ERROR:") || strings.Contains(line, "error:") {
+			lastErrMu.Lock()
+			lastErr = line
+			lastErrMu.Unlock()
+		}
+	}
+
+	go m.parseOutputWithCapture(stdout, captureErr)
+	go m.parseOutputWithCapture(stderr, captureErr)
 
 	err = cmd.Wait()
 	if err != nil {
-		m.sendDownloadComplete(false, err)
+		lastErrMu.Lock()
+		detail := lastErr
+		lastErrMu.Unlock()
+		if detail != "" {
+			m.sendDownloadComplete(false, fmt.Errorf("%s", detail))
+		} else {
+			m.sendDownloadComplete(false, err)
+		}
 	} else {
 		m.sendDownloadComplete(true, nil)
 	}
 }
 
-func (m *Model) parseOutput(reader io.Reader) {
-	scanner := bufio.NewScanner(reader)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-	scanner.Split(splitCRLF)
+func (m *Model) parseOutputWithCapture(reader io.Reader, capture func(string)) {
+	m.parseOutputInternal(reader, capture)
+}
 
+func (m *Model) parseOutput(reader io.Reader) {
+	m.parseOutputInternal(reader, nil)
+}
+
+func (m *Model) parseOutputInternal(reader io.Reader, capture func(string)) {
 	customProgressRegex := regexp.MustCompile(`download:\[download\].*?\((\d+\.?\d*)%\)`)
 	ytdlpProgressRegex := regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%`)
 	aria2cProgressRegex := regexp.MustCompile(`\((\d+)%\)`)
-	speedRegex := regexp.MustCompile(`(?:DL:|at\s+)(\d+\.?\d*\w+/?s)`)
+	aria2cFullRegex := regexp.MustCompile(`\[#[0-9a-f]+\s+.*?\((\d+)%\).*?DL:([0-9.]+\S+)(?:.*?ETA:(\S+))?`)
+	speedRegex := regexp.MustCompile(`(?:DL:|at\s+)(\d+\.?\d*\S+/s)`)
 	etaRegex := regexp.MustCompile(`ETA[:\s]+(\S+)`)
 	bytesProgressRegex := regexp.MustCompile(`([0-9.]+)\s*([kKmMgGtT]?i?B)/([0-9.]+)\s*([kKmMgGtT]?i?B)`)
 
@@ -1352,63 +1401,79 @@ func (m *Model) parseOutput(reader io.Reader) {
 		return 1
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if line != "" {
-			if matches := ytdlpProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
-				percent, _ := strconv.ParseFloat(matches[1], 64)
-				speed := ""
-				eta := ""
-				if speedMatches := speedRegex.FindStringSubmatch(line); len(speedMatches) >= 2 {
-					speed = speedMatches[1]
-				}
-				if etaMatches := etaRegex.FindStringSubmatch(line); len(etaMatches) >= 2 {
-					eta = etaMatches[1]
-				}
+	processLine := func(line string) {
+		if line == "" {
+			return
+		}
+		// Capture error lines for better error messages
+		if capture != nil {
+			capture(line)
+		}
+		// Try aria2c full format first: [#hex SIZE/TOTAL(PCT%) CN:N DL:SPEED ETA:TIME]
+		if am := aria2cFullRegex.FindStringSubmatch(line); len(am) >= 2 {
+			percent, _ := strconv.ParseFloat(am[1], 64)
+			speed := ""
+			if len(am) >= 3 && am[2] != "" { speed = am[2] + "/s" }
+			eta := ""
+			if len(am) >= 4 && am[3] != "" { eta = am[3] }
+			m.sendProgress(line, percent, speed, eta)
+		} else if matches := ytdlpProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
+			percent, _ := strconv.ParseFloat(matches[1], 64)
+			speed, eta := "", ""
+			if sm := speedRegex.FindStringSubmatch(line); len(sm) >= 2 { speed = sm[1] }
+			if em := etaRegex.FindStringSubmatch(line); len(em) >= 2 { eta = em[1] }
+			m.sendProgress(line, percent, speed, eta)
+		} else if matches := customProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
+			percent, _ := strconv.ParseFloat(matches[1], 64)
+			speed, eta := "", ""
+			if sm := speedRegex.FindStringSubmatch(line); len(sm) >= 2 { speed = sm[1] }
+			if em := etaRegex.FindStringSubmatch(line); len(em) >= 2 { eta = em[1] }
+			m.sendProgress(line, percent, speed, eta)
+		} else if matches := aria2cProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
+			percent, _ := strconv.ParseFloat(matches[1], 64)
+			speed, eta := "", ""
+			if em := etaRegex.FindStringSubmatch(line); len(em) >= 2 { eta = em[1] }
+			// aria2c DL: format without /s
+			dlRegex := regexp.MustCompile(`DL:([0-9.]+\S+)`)
+			if dm := dlRegex.FindStringSubmatch(line); len(dm) >= 2 { speed = dm[1] + "/s" }
+			m.sendProgress(line, percent, speed, eta)
+		} else if bm := bytesProgressRegex.FindStringSubmatch(line); len(bm) == 5 {
+			cur, _ := strconv.ParseFloat(bm[1], 64)
+			tot, _ := strconv.ParseFloat(bm[3], 64)
+			mu := unitToMultiplier(bm[2])
+			mt := unitToMultiplier(bm[4])
+			if mt > 0 && tot > 0 {
+				percent := (cur * mu) / (tot * mt) * 100.0
+				speed, eta := "", ""
+				if sm := speedRegex.FindStringSubmatch(line); len(sm) >= 2 { speed = sm[1] }
+				if em := etaRegex.FindStringSubmatch(line); len(em) >= 2 { eta = em[1] }
 				m.sendProgress(line, percent, speed, eta)
-			} else if matches := customProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
-				percent, _ := strconv.ParseFloat(matches[1], 64)
-				speed := ""
-				eta := ""
-				if speedMatches := speedRegex.FindStringSubmatch(line); len(speedMatches) >= 2 {
-					speed = speedMatches[1]
-				}
-				if etaMatches := etaRegex.FindStringSubmatch(line); len(etaMatches) >= 2 {
-					eta = etaMatches[1]
-				}
-				m.sendProgress(line, percent, speed, eta)
-			} else if matches := aria2cProgressRegex.FindStringSubmatch(line); len(matches) >= 2 {
-				percent, _ := strconv.ParseFloat(matches[1], 64)
-				speed := ""
-				eta := ""
-				if speedMatches := speedRegex.FindStringSubmatch(line); len(speedMatches) >= 2 {
-					speed = speedMatches[1]
-				}
-				if etaMatches := etaRegex.FindStringSubmatch(line); len(etaMatches) >= 2 {
-					eta = etaMatches[1]
-				}
-				m.sendProgress(line, percent, speed, eta)
-			} else if bm := bytesProgressRegex.FindStringSubmatch(line); len(bm) == 5 {
-				cur, _ := strconv.ParseFloat(bm[1], 64)
-				tot, _ := strconv.ParseFloat(bm[3], 64)
-				mu := unitToMultiplier(bm[2])
-				mt := unitToMultiplier(bm[4])
-				if mt > 0 && tot > 0 {
-					percent := (cur * mu) / (tot * mt) * 100.0
-					speed := ""
-					if speedMatches := speedRegex.FindStringSubmatch(line); len(speedMatches) >= 2 {
-						speed = speedMatches[1]
-					}
-					eta := ""
-					if etaMatches := etaRegex.FindStringSubmatch(line); len(etaMatches) >= 2 {
-						eta = etaMatches[1]
-					}
-					m.sendProgress(line, percent, speed, eta)
-				}
-			} else if strings.Contains(line, "[download]") || strings.Contains(line, "[info]") || strings.Contains(line, "Destination:") {
-				m.sendProgress(line, 0, "", "")
 			}
+		} else if strings.Contains(line, "[download]") || strings.Contains(line, "[info]") || strings.Contains(line, "Destination:") || strings.Contains(line, "[#") {
+			m.sendProgress(line, 0, "", "")
+		}
+	}
+
+	// Read byte-by-byte to avoid pipe buffering issues on Linux
+	var lineBuf []byte
+	oneByte := make([]byte, 1)
+	for {
+		n, err := reader.Read(oneByte)
+		if n == 1 {
+			if oneByte[0] == '\r' || oneByte[0] == '\n' {
+				if len(lineBuf) > 0 {
+					processLine(string(lineBuf))
+					lineBuf = lineBuf[:0]
+				}
+			} else {
+				lineBuf = append(lineBuf, oneByte[0])
+			}
+		}
+		if err != nil {
+			if len(lineBuf) > 0 {
+				processLine(string(lineBuf))
+			}
+			break
 		}
 	}
 }
@@ -1525,11 +1590,13 @@ func (m *Model) updateDownloading(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch info.State {
 		case "downloading", "preparing":
-			status := "Downloading..."
-			if info.State == "preparing" {
-				status = "Preparing download..."
+			if info.StatusMsg != "" {
+				m.downloadProgress = info.StatusMsg
+			} else if info.State == "preparing" {
+				m.downloadProgress = "Preparing download..."
+			} else {
+				m.downloadProgress = "Downloading..."
 			}
-			m.downloadProgress = status
 			return m, m.activePollerCmd
 		case "complete":
 			m.downloadComplete = true
@@ -1584,8 +1651,12 @@ func (m *Model) updateDownloading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	// If we have an active daemon download, wait for next poll; otherwise wait for progressChan
-	if m.activeDownloadID != "" && m.activePollerCmd != nil {
-		return m, m.activePollerCmd
+	if m.activeDownloadID != "" {
+		if m.activePollerCmd != nil {
+			return m, m.activePollerCmd
+		}
+		// Poller finished but we're still in downloading state -- don't hang
+		return m, nil
 	}
 	return m, waitForProgress
 }
@@ -1723,6 +1794,10 @@ func (m *Model) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	}
+	// Keep the downloads poller running so the list keeps updating
+	if m.downloadsPollerCmd != nil {
+		return m, m.downloadsPollerCmd
 	}
 	return m, nil
 }

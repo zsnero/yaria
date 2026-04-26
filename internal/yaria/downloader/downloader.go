@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"yaria/internal/yaria/config"
+	"yaria/internal/yaria/cookies"
 
 	"github.com/google/go-github/v62/github"
 )
@@ -558,15 +559,14 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		metaArgs = append(metaArgs, getSiteHeaders(url)...)
 	}
 
-	// Always auto-detect cookies -- YouTube age-restricted, Instagram,
-	// and many other sites require browser cookies for full access.
+	// Extract cookies: try kooky (pure Go, works with locked browsers),
+	// fall back to yt-dlp's --cookies-from-browser
 	cookieBrowser := d.cfg.CookieBrowser
 	if cookieBrowser == "" {
-		cookieBrowser = detectBrowser()
+		cookieBrowser = DetectBrowser()
 	}
-	if cookieBrowser != "" {
-		metaArgs = append(metaArgs, "--cookies-from-browser", cookieBrowser)
-	}
+	cookieArgs := cookies.GetYTDLPCookieArgs(url, cookieBrowser)
+	metaArgs = append(metaArgs, cookieArgs...)
 
 	metaArgs = append(metaArgs, args...)
 	cmd := exec.Command(ytDlpCmd, metaArgs...)
@@ -777,9 +777,13 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 		"--no-warnings",
 		"--extractor-retries", "2",
 	}
-	if d.cfg.CookieBrowser != "" {
-		cmdArgs = append(cmdArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
+	// Extract cookies: kooky first, yt-dlp fallback
+	cookieBrowser := d.cfg.CookieBrowser
+	if cookieBrowser == "" {
+		cookieBrowser = DetectBrowser()
 	}
+	cookieArgs := cookies.GetYTDLPCookieArgs(url, cookieBrowser)
+	cmdArgs = append(cmdArgs, cookieArgs...)
 	cmdArgs = append(cmdArgs, url)
 	cmd := exec.Command(ytDlpCmd, cmdArgs...)
 	output, err := cmd.CombinedOutput()
@@ -794,11 +798,6 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 			return nil, fmt.Errorf("%s", errMsg)
 		}
 		return nil, err
-	}
-
-	// Debug: print raw output for non-YouTube sites
-	if strings.Contains(url, "youtube.com") == false {
-		fmt.Fprintf(d.cfg.Stderr, "DEBUG: Raw formats output for %s:\n%s\n", url, string(output))
 	}
 
 	var formats []Format
@@ -1023,14 +1022,13 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			"--user-agent", userAgent,
 			"--output", filepath.Join(tempDir, d.cfg.OutputTemplate),
 		)
-		// Auto-detect cookies for sites that need them
+		// Extract cookies: kooky first, yt-dlp fallback
 		dlCookieBrowser := d.cfg.CookieBrowser
 		if dlCookieBrowser == "" {
-			dlCookieBrowser = detectBrowser()
+			dlCookieBrowser = DetectBrowser()
 		}
-		if dlCookieBrowser != "" {
-			cmdArgs = append(cmdArgs, "--cookies-from-browser", dlCookieBrowser)
-		}
+		dlCookieArgs := cookies.GetYTDLPCookieArgs(strings.Join(args, " "), dlCookieBrowser)
+		cmdArgs = append(cmdArgs, dlCookieArgs...)
 
 		// Add site-specific headers and settings
 		if isProblematic {
@@ -1210,9 +1208,8 @@ func splitLines(s string) []string {
 	return lines
 }
 
-// detectBrowser auto-detects an installed browser for cookie extraction.
-// Returns the yt-dlp browser identifier or empty string if none found.
-// detectBrowser finds a browser for cookie extraction.
+// DetectBrowser finds an installed browser for cookie extraction.
+// Checks installed browsers and their profile directories to find
 // Returns the yt-dlp --cookies-from-browser value.
 //
 // Supports:
@@ -1224,7 +1221,8 @@ func splitLines(s string) []string {
 //
 // Firefox forks use "firefox:/path/to/profile" syntax.
 // Chromium forks use "chromium:/path/to/profile" syntax.
-func detectBrowser() string {
+// DetectBrowser auto-detects an installed browser for cookie extraction.
+func DetectBrowser() string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return ""
