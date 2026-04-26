@@ -558,9 +558,10 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		metaArgs = append(metaArgs, getSiteHeaders(url)...)
 	}
 
-	// Auto-detect cookies
+	// Always auto-detect cookies -- YouTube age-restricted, Instagram,
+	// and many other sites require browser cookies for full access.
 	cookieBrowser := d.cfg.CookieBrowser
-	if cookieBrowser == "" && isProblematic {
+	if cookieBrowser == "" {
 		cookieBrowser = detectBrowser()
 	}
 	if cookieBrowser != "" {
@@ -579,8 +580,9 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 				return "", "", fmt.Errorf("unsupported URL")
 			case strings.Contains(errMsg, "Video unavailable"):
 				return "", "", fmt.Errorf("video unavailable (private, deleted, or region-locked)")
-			case strings.Contains(errMsg, "Sign in"), strings.Contains(errMsg, "Age-restricted"):
-				return "", "", fmt.Errorf("age-restricted video, browser cookies required")
+			case strings.Contains(errMsg, "Sign in"), strings.Contains(errMsg, "Age-restricted"),
+				strings.Contains(errMsg, "confirm you're not a bot"):
+				return "", "", fmt.Errorf("sign-in required. Log into YouTube in your browser and try again")
 			case strings.Contains(errMsg, "HTTP Error 429"):
 				return "", "", fmt.Errorf("rate limited, try again later")
 			case strings.Contains(errMsg, "No video formats found"), strings.Contains(errMsg, "unsupported URL format"):
@@ -1023,7 +1025,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		)
 		// Auto-detect cookies for sites that need them
 		dlCookieBrowser := d.cfg.CookieBrowser
-		if dlCookieBrowser == "" && isProblematic {
+		if dlCookieBrowser == "" {
 			dlCookieBrowser = detectBrowser()
 		}
 		if dlCookieBrowser != "" {
@@ -1210,46 +1212,263 @@ func splitLines(s string) []string {
 
 // detectBrowser auto-detects an installed browser for cookie extraction.
 // Returns the yt-dlp browser identifier or empty string if none found.
+// detectBrowser finds a browser for cookie extraction.
+// Returns the yt-dlp --cookies-from-browser value.
+//
+// Supports:
+//   - Firefox forks: Librewolf, Waterfox, Floorp, Zen, Mercury, Mullvad, Pale Moon
+//   - Chromium forks: Thorium, Ungoogled Chromium, Arc
+//   - Standard: Firefox, Chrome, Chromium, Brave, Edge, Vivaldi, Opera, Safari, Whale
+//   - Install methods: native, Flatpak, Snap
+//   - Platforms: Linux, macOS, Windows
+//
+// Firefox forks use "firefox:/path/to/profile" syntax.
+// Chromium forks use "chromium:/path/to/profile" syntax.
 func detectBrowser() string {
-	// Map of binary names to yt-dlp cookie browser identifiers
-	// Check common names across Linux, macOS, Windows
-	checks := []struct {
-		paths []string // binary names or full paths to check
-		name  string   // yt-dlp --cookies-from-browser identifier
-	}{
-		{[]string{"firefox", "/usr/bin/firefox", "/snap/bin/firefox",
-			"/Applications/Firefox.app/Contents/MacOS/firefox"}, "firefox"},
-		{[]string{"google-chrome-stable", "google-chrome", "chrome",
-			"/usr/bin/google-chrome-stable",
-			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-			`C:\Program Files\Google\Chrome\Application\chrome.exe`}, "chrome"},
-		{[]string{"chromium", "chromium-browser", "/usr/bin/chromium",
-			"/snap/bin/chromium"}, "chromium"},
-		{[]string{"brave-browser", "brave",
-			"/usr/bin/brave-browser",
-			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-			`C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe`}, "brave"},
-		{[]string{"microsoft-edge-stable", "microsoft-edge",
-			"/usr/bin/microsoft-edge-stable",
-			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-			`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`}, "edge"},
-		{[]string{"vivaldi", "/usr/bin/vivaldi-stable"}, "vivaldi"},
-		{[]string{"opera", "/usr/bin/opera"}, "opera"},
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
 	}
 
-	for _, c := range checks {
-		for _, p := range c.paths {
-			if strings.Contains(p, "/") || strings.Contains(p, `\`) {
-				// Full path - check file exists
-				if _, err := os.Stat(p); err == nil {
-					return c.name
+	// --- Phase 1: Firefox-based forks (checked first, most likely to have real cookies) ---
+	type forkDef struct {
+		binaries  []string // binary names to check in PATH
+		cookieDirs []string // profile directories (contain subdirs with cookies.sqlite)
+		ytdlpBase string   // "firefox" -- all Firefox forks use this
+	}
+
+	firefoxForks := []forkDef{
+		// Librewolf
+		{[]string{"librewolf"},
+			[]string{
+				filepath.Join(home, ".librewolf"),
+				filepath.Join(home, "Library", "Application Support", "LibreWolf"),
+				filepath.Join(home, ".var", "app", "io.gitlab.librewolf-community", ".librewolf"),
+			}, "firefox"},
+		// Waterfox
+		{[]string{"waterfox"},
+			[]string{
+				filepath.Join(home, ".waterfox"),
+				filepath.Join(home, "Library", "Application Support", "Waterfox"),
+			}, "firefox"},
+		// Floorp
+		{[]string{"floorp"},
+			[]string{
+				filepath.Join(home, ".floorp"),
+				filepath.Join(home, "Library", "Application Support", "Floorp"),
+				filepath.Join(home, ".var", "app", "one.ablaze.floorp", ".floorp"),
+			}, "firefox"},
+		// Zen Browser
+		{[]string{"zen-browser", "zen"},
+			[]string{
+				filepath.Join(home, ".zen"),
+			}, "firefox"},
+		// Mercury Browser
+		{[]string{"mercury-browser"},
+			[]string{
+				filepath.Join(home, ".mercury"),
+			}, "firefox"},
+		// Mullvad Browser
+		{[]string{"mullvad-browser"},
+			[]string{
+				filepath.Join(home, ".mullvad"),
+			}, "firefox"},
+		// Pale Moon
+		{[]string{"palemoon"},
+			[]string{
+				filepath.Join(home, ".moonchild productions", "pale moon"),
+			}, "firefox"},
+	}
+
+	for _, fork := range firefoxForks {
+		installed := false
+		for _, bin := range fork.binaries {
+			if _, err := exec.LookPath(bin); err == nil {
+				installed = true
+				break
+			}
+		}
+		if !installed {
+			continue
+		}
+		for _, dir := range fork.cookieDirs {
+			if profile := findFirefoxProfile(dir); profile != "" {
+				return fork.ytdlpBase + ":" + profile
+			}
+		}
+	}
+
+	// --- Phase 2: Chromium-based forks (not natively in yt-dlp) ---
+	type chromeForkDef struct {
+		binaries  []string
+		cookieDirs []string // contain "Default/Cookies" or similar
+		ytdlpBase string   // "chrome" or "chromium"
+	}
+
+	chromeForks := []chromeForkDef{
+		// Thorium
+		{[]string{"thorium-browser", "thorium"},
+			[]string{
+				filepath.Join(home, ".config", "thorium"),
+			}, "chromium"},
+	}
+
+	for _, fork := range chromeForks {
+		installed := false
+		for _, bin := range fork.binaries {
+			if _, err := exec.LookPath(bin); err == nil {
+				installed = true
+				break
+			}
+		}
+		if !installed {
+			continue
+		}
+		for _, dir := range fork.cookieDirs {
+			if profile := findChromiumProfile(dir); profile != "" {
+				return fork.ytdlpBase + ":" + profile
+			}
+		}
+	}
+
+	// --- Phase 3: Standard browsers (yt-dlp native support) ---
+	// Check in order of likelihood of having logged-in sessions.
+	type stdBrowser struct {
+		binaries []string
+		name     string
+	}
+
+	var standard []stdBrowser
+
+	switch runtime.GOOS {
+	case "linux":
+		standard = []stdBrowser{
+			// Native installs
+			{[]string{"firefox"}, "firefox"},
+			{[]string{"google-chrome-stable", "google-chrome"}, "chrome"},
+			{[]string{"chromium", "chromium-browser"}, "chromium"},
+			{[]string{"brave-browser", "brave"}, "brave"},
+			{[]string{"microsoft-edge-stable", "microsoft-edge"}, "edge"},
+			{[]string{"vivaldi-stable", "vivaldi"}, "vivaldi"},
+			{[]string{"opera"}, "opera"},
+			{[]string{"whale"}, "whale"},
+			// Snap installs
+			{[]string{"/snap/bin/firefox"}, "firefox"},
+			{[]string{"/snap/bin/chromium"}, "chromium"},
+		}
+		// Also check Flatpak Firefox profile dir even if binary is in PATH as "firefox"
+		flatpakFirefox := filepath.Join(home, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox")
+		if profile := findFirefoxProfile(flatpakFirefox); profile != "" {
+			// Flatpak Firefox exists with cookies -- use it
+			return "firefox:" + profile
+		}
+
+	case "darwin":
+		standard = []stdBrowser{
+			{[]string{"/Applications/Firefox.app/Contents/MacOS/firefox", "firefox"}, "firefox"},
+			{[]string{"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "google-chrome"}, "chrome"},
+			{[]string{"/Applications/Chromium.app/Contents/MacOS/Chromium", "chromium"}, "chromium"},
+			{[]string{"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", "brave-browser"}, "brave"},
+			{[]string{"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"}, "edge"},
+			{[]string{"/Applications/Vivaldi.app/Contents/MacOS/Vivaldi"}, "vivaldi"},
+			{[]string{"/Applications/Opera.app/Contents/MacOS/Opera"}, "opera"},
+			{[]string{"safari"}, "safari"},
+		}
+
+	case "windows":
+		localAppData := os.Getenv("LOCALAPPDATA")
+		programFiles := os.Getenv("ProgramFiles")
+		programFilesX86 := os.Getenv("ProgramFiles(x86)")
+		if programFiles == "" {
+			programFiles = `C:\Program Files`
+		}
+		if programFilesX86 == "" {
+			programFilesX86 = `C:\Program Files (x86)`
+		}
+		standard = []stdBrowser{
+			{[]string{filepath.Join(programFiles, "Google", "Chrome", "Application", "chrome.exe")}, "chrome"},
+			{[]string{filepath.Join(programFiles, "Mozilla Firefox", "firefox.exe")}, "firefox"},
+			{[]string{filepath.Join(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")}, "brave"},
+			{[]string{filepath.Join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe")}, "edge"},
+			{[]string{filepath.Join(localAppData, "Vivaldi", "Application", "vivaldi.exe")}, "vivaldi"},
+			{[]string{filepath.Join(programFiles, "Opera", "opera.exe")}, "opera"},
+		}
+
+	default:
+		standard = []stdBrowser{
+			{[]string{"firefox"}, "firefox"},
+			{[]string{"chromium"}, "chromium"},
+		}
+	}
+
+	for _, b := range standard {
+		for _, bin := range b.binaries {
+			if filepath.IsAbs(bin) {
+				if _, err := os.Stat(bin); err == nil {
+					return b.name
 				}
 			} else {
-				// Binary name - check in PATH
-				if _, err := exec.LookPath(p); err == nil {
-					return c.name
+				if _, err := exec.LookPath(bin); err == nil {
+					return b.name
 				}
 			}
+		}
+	}
+
+	return ""
+}
+
+// findFirefoxProfile finds the most recently used profile directory
+// containing cookies.sqlite in a Firefox-compatible browser's profile directory.
+func findFirefoxProfile(profilesDir string) string {
+	if _, err := os.Stat(profilesDir); err != nil {
+		return ""
+	}
+
+	var bestProfile string
+	var bestTime int64
+
+	entries, err := os.ReadDir(profilesDir)
+	if err != nil {
+		return ""
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		cookiePath := filepath.Join(profilesDir, e.Name(), "cookies.sqlite")
+		info, err := os.Stat(cookiePath)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Unix() > bestTime {
+			bestTime = info.ModTime().Unix()
+			bestProfile = filepath.Join(profilesDir, e.Name())
+		}
+	}
+
+	return bestProfile
+}
+
+// findChromiumProfile finds a Chromium-based browser profile with cookies.
+func findChromiumProfile(configDir string) string {
+	cookiePath := filepath.Join(configDir, "Default", "Cookies")
+	if _, err := os.Stat(cookiePath); err == nil {
+		return filepath.Join(configDir, "Default")
+	}
+	// Try "Profile 1", "Profile 2", etc.
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		cp := filepath.Join(configDir, e.Name(), "Cookies")
+		if _, err := os.Stat(cp); err == nil {
+			return filepath.Join(configDir, e.Name())
 		}
 	}
 	return ""
