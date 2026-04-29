@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -63,7 +61,7 @@ func EnsureRunning() error {
 		Dir:   "/",
 		Env:   os.Environ(),
 		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
-		Sys:   &syscall.SysProcAttr{Setsid: true},
+		Sys:   daemonSysProcAttr(),
 	}
 	proc, err := os.StartProcess(exe, []string{exe, "daemon"}, attr)
 	if err != nil {
@@ -109,7 +107,7 @@ func RunDaemon() error {
 	// Graceful shutdown
 	shutdown := make(chan struct{})
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	notifyShutdownSignals(sigCh)
 	go func() {
 		<-sigCh
 		close(shutdown)

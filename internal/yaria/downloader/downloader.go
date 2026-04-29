@@ -585,6 +585,10 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 				return "", "", fmt.Errorf("sign-in required. Log into YouTube in your browser and try again")
 			case strings.Contains(errMsg, "HTTP Error 429"):
 				return "", "", fmt.Errorf("rate limited, try again later")
+			case strings.Contains(errMsg, "HTTP Error 413"), strings.Contains(errMsg, "Request Entity Too Large"):
+				// Clear cookie cache and retry without cookies
+				cookies.ClearCache()
+				return "", "", fmt.Errorf("request too large (cookies file may be oversized). Cache cleared -- please try again")
 			case strings.Contains(errMsg, "No video formats found"), strings.Contains(errMsg, "unsupported URL format"):
 				return "", "", fmt.Errorf("no video formats found. Try updating yt-dlp: pip install -U yt-dlp (or: sudo pacman -S yt-dlp)")
 			case strings.Contains(errMsg, "Requested format is not available"):
@@ -1126,8 +1130,11 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		cmd.Stderr = d.cfg.Stderr
 
 		// Set environment variables for better performance
+		// NOTE: Do NOT set PYTHONNOUSERSITE=1 here -- it prevents yt-dlp
+		// from finding pip-installed packages (e.g. newer yt-dlp in user
+		// site-packages), causing it to fall back to an outdated system
+		// version that may fail on modern YouTube.
 		cmd.Env = append(os.Environ(),
-			"PYTHONNOUSERSITE=1",
 			"PYTHONDONTWRITEBYTECODE=1",
 			"PYTHONUNBUFFERED=1",
 		)
@@ -1183,7 +1190,6 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 
 				// Set environment variables for better performance
 				cmd.Env = append(os.Environ(),
-					"PYTHONNOUSERSITE=1",
 					"PYTHONDONTWRITEBYTECODE=1",
 					"PYTHONUNBUFFERED=1",
 				)
