@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"yaria/internal/yaria/cookies"
 	"yaria/internal/yaria/downloader"
@@ -30,6 +32,7 @@ type managedDownload struct {
 	cmd           *exec.Cmd
 	cancel        func() // kills the yt-dlp process
 	alreadyExists bool   // yt-dlp reported file already downloaded
+	addedAt       time.Time
 }
 
 // Manager manages all background yt-dlp downloads
@@ -46,11 +49,12 @@ func NewManager(store *StateStore) *Manager {
 		store:     store,
 	}
 	// Restore only paused or in-progress downloads (completed ones are already removed from state)
-	for _, entry := range store.GetDownloads() {
+	for i, entry := range store.GetDownloads() {
 		md := &managedDownload{
-			entry:  entry,
-			paused: entry.Paused,
-			state:  "preparing",
+			entry:   entry,
+			paused:  entry.Paused,
+			state:   "preparing",
+			addedAt: time.Now().Add(time.Duration(i) * time.Millisecond), // preserve restore order
 		}
 		m.downloads[entry.ID] = md
 		if entry.Paused {
@@ -101,8 +105,9 @@ func (m *Manager) Add(req Request) (string, error) {
 		OutputTemplate: req.OutputTemplate,
 	}
 	md := &managedDownload{
-		entry: entry,
-		state: "preparing",
+		entry:   entry,
+		state:   "preparing",
+		addedAt: time.Now(),
 	}
 	m.downloads[id] = md
 	m.mu.Unlock()
@@ -177,25 +182,42 @@ func (m *Manager) Resume(id string) error {
 	return nil
 }
 
-// List returns info about all downloads
+// List returns info about all downloads, sorted newest first.
 func (m *Manager) List() []DownloadInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var out []DownloadInfo
+	type indexedInfo struct {
+		info    DownloadInfo
+		addedAt time.Time
+	}
+	items := make([]indexedInfo, 0, len(m.downloads))
 	for _, md := range m.downloads {
-		out = append(out, DownloadInfo{
-			ID:        md.entry.ID,
-			URL:       md.entry.URL,
-			Title:     md.entry.Title,
-			Dir:       md.entry.Dir,
-			State:     md.state,
-			Percent:   md.percent,
-			Speed:     md.speed,
-			ETA:       md.eta,
-			Error:     md.errMsg,
-			StatusMsg: md.statusMsg,
+		items = append(items, indexedInfo{
+			info: DownloadInfo{
+				ID:        md.entry.ID,
+				URL:       md.entry.URL,
+				Title:     md.entry.Title,
+				Dir:       md.entry.Dir,
+				State:     md.state,
+				Percent:   md.percent,
+				Speed:     md.speed,
+				ETA:       md.eta,
+				Error:     md.errMsg,
+				StatusMsg: md.statusMsg,
+			},
+			addedAt: md.addedAt,
 		})
+	}
+
+	// Sort newest first for stable UI ordering (map iteration is random).
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].addedAt.After(items[j].addedAt)
+	})
+
+	out := make([]DownloadInfo, len(items))
+	for i, item := range items {
+		out[i] = item.info
 	}
 	return out
 }

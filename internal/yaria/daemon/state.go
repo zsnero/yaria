@@ -2,10 +2,16 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
+
+var bucketDownloads = []byte("downloads")
 
 // DownloadEntry is persisted to disk for resume across daemon restarts
 type DownloadEntry struct {
@@ -23,89 +29,138 @@ type DownloadEntry struct {
 	OutputTemplate string `json:"output_template,omitempty"`
 }
 
-// DaemonState is the full persisted state
+// DaemonState is kept for JSON migration compatibility.
 type DaemonState struct {
 	Downloads []DownloadEntry `json:"downloads"`
 }
 
-// StateStore manages persistent daemon state
+// StateStore manages persistent daemon state using BoltDB.
 type StateStore struct {
-	mu   sync.Mutex
-	path string
-	data DaemonState
+	mu sync.Mutex
+	db *bolt.DB
 }
 
-// NewStateStore creates or loads state from the given directory
+// NewStateStore creates or loads state from the given directory.
 func NewStateStore(dir string) (*StateStore, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	s := &StateStore{path: filepath.Join(dir, "state.json")}
-	s.load()
+
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("open state db: %w", err)
+	}
+
+	// Create bucket
+	err = db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists(bucketDownloads)
+		return err
+	})
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	s := &StateStore{db: db}
+
+	// Migrate from old JSON state if it exists
+	s.migrateFromJSON(dir)
+
 	return s, nil
 }
 
-func (s *StateStore) load() {
-	data, err := os.ReadFile(s.path)
+// migrateFromJSON imports data from the old state.json file if it exists.
+func (s *StateStore) migrateFromJSON(dir string) {
+	jsonPath := filepath.Join(dir, "state.json")
+	data, err := os.ReadFile(jsonPath)
 	if err != nil {
+		return // no old file
+	}
+
+	var old DaemonState
+	if err := json.Unmarshal(data, &old); err != nil {
 		return
 	}
-	_ = json.Unmarshal(data, &s.data)
+
+	for _, entry := range old.Downloads {
+		s.AddDownload(entry)
+	}
+
+	// Rename old file so it's not re-imported
+	os.Rename(jsonPath, jsonPath+".migrated")
 }
 
-// Save writes state to disk
+// Save is a no-op -- BoltDB auto-persists on each Update transaction.
+// Kept for API compatibility with the Manager.
 func (s *StateStore) Save() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	data, err := json.MarshalIndent(s.data, "", "\t")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, data, 0644)
+	return nil
 }
 
-// AddDownload upserts a download entry
+// Close closes the BoltDB database.
+func (s *StateStore) Close() error {
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
+}
+
+// AddDownload upserts a download entry.
 func (s *StateStore) AddDownload(entry DownloadEntry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, e := range s.data.Downloads {
-		if e.ID == entry.ID {
-			s.data.Downloads[i] = entry
-			return
+	s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketDownloads)
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
 		}
-	}
-	s.data.Downloads = append(s.data.Downloads, entry)
+		return b.Put([]byte(entry.ID), data)
+	})
 }
 
-// RemoveDownload removes a download entry by ID
+// RemoveDownload removes a download entry by ID.
 func (s *StateStore) RemoveDownload(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, e := range s.data.Downloads {
-		if e.ID == id {
-			s.data.Downloads = append(s.data.Downloads[:i], s.data.Downloads[i+1:]...)
-			return
-		}
-	}
+	s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketDownloads).Delete([]byte(id))
+	})
 }
 
-// SetPaused sets the paused state of a download
+// SetPaused sets the paused state of a download.
 func (s *StateStore) SetPaused(id string, paused bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i, e := range s.data.Downloads {
-		if e.ID == id {
-			s.data.Downloads[i].Paused = paused
-			return
+
+	s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketDownloads)
+		data := b.Get([]byte(id))
+		if data == nil {
+			return nil
 		}
-	}
+		var entry DownloadEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			return err
+		}
+		entry.Paused = paused
+		updated, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(id), updated)
+	})
 }
 
-// GetDownloads returns a copy of all entries
+// GetDownloads returns a copy of all entries.
 func (s *StateStore) GetDownloads() []DownloadEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]DownloadEntry, len(s.data.Downloads))
-	copy(out, s.data.Downloads)
-	return out
+	var entries []DownloadEntry
+	s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketDownloads)
+		return b.ForEach(func(k, v []byte) error {
+			var entry DownloadEntry
+			if err := json.Unmarshal(v, &entry); err != nil {
+				return nil // skip corrupted entries
+			}
+			entries = append(entries, entry)
+			return nil
+		})
+	})
+	return entries
 }

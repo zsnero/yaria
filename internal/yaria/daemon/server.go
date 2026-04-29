@@ -97,6 +97,7 @@ func RunDaemon() error {
 
 	mgr := NewManager(store)
 	defer mgr.Close()
+	defer store.Close()
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
