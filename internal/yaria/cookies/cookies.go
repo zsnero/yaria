@@ -109,12 +109,128 @@ func ExtractCookiesFile(domains []string) string {
 }
 
 // ExtractYouTubeCookies extracts cookies for YouTube/Google domains.
+// Filters out bloat: ST-* state cookies from .youtube.com (~80 cookies, ~78KB)
+// and non-essential cookies from .google.com to avoid HTTP 413 errors.
 func ExtractYouTubeCookies() string {
-	return ExtractCookiesFile([]string{
-		".youtube.com",
+	return ExtractCookiesFileFiltered(
+		[]string{".youtube.com", ".googlevideo.com"},
+		// .google.com has hundreds of cookies from other Google services;
+		// only extract the ones YouTube actually needs for authentication.
 		".google.com",
-		".googlevideo.com",
-	})
+		youtubeEssentialCookies,
+		// ST-* are YouTube client-side state cookies (scroll position, UI state, etc.)
+		// They are ~2KB each and there can be 50-100+ of them, causing HTTP 413 errors.
+		[]string{"ST-"},
+	)
+}
+
+// youtubeEssentialCookies is the set of .google.com cookie names that
+// YouTube requires for authentication. All other .google.com cookies
+// (from Gmail, Drive, Docs, etc.) are excluded to keep the cookie file
+// small and avoid HTTP 413 "Request Entity Too Large" errors.
+var youtubeEssentialCookies = map[string]bool{
+	"SID": true, "HSID": true, "SSID": true,
+	"APISID": true, "SAPISID": true,
+	"__Secure-1PSID": true, "__Secure-3PSID": true,
+	"__Secure-1PAPISID": true, "__Secure-3PAPISID": true,
+	"__Secure-1PSIDTS": true, "__Secure-3PSIDTS": true,
+	"__Secure-1PSIDCC": true, "__Secure-3PSIDCC": true,
+	"NID": true, "SIDCC": true,
+	"LOGIN_INFO": true, "PREF": true,
+}
+
+// ExtractCookiesFileFiltered extracts cookies for the given domains,
+// plus cookies from filteredDomain that match the allowedNames whitelist.
+// skipPrefixes are cookie name prefixes to exclude from all domains
+// (e.g., "ST-" for YouTube state cookies).
+// This prevents oversized cookie files that cause HTTP 413 errors.
+func ExtractCookiesFileFiltered(domains []string, filteredDomain string, allowedNames map[string]bool, skipPrefixes []string) string {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+
+	// Return cached file if still fresh
+	if cachedFile != "" && time.Since(cachedAt) < cacheDuration {
+		if _, err := os.Stat(cachedFile); err == nil {
+			return cachedFile
+		}
+	}
+
+	cookiesPath := getCookiesFilePath()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	f, err := os.Create(cookiesPath)
+	if err != nil {
+		return ""
+	}
+	fmt.Fprint(f, "# HTTP Cookie File\n\n")
+
+	written := 0
+	shouldSkip := func(name string) bool {
+		for _, prefix := range skipPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	writeCookie := func(cookie *kooky.Cookie) {
+		httpCookie := &cookie.Cookie
+		expires := httpCookie.Expires.Unix()
+		if expires <= 0 {
+			expires = time.Now().Add(24 * time.Hour).Unix()
+		}
+		var domainStr string
+		if httpCookie.HttpOnly {
+			domainStr = "#HttpOnly_"
+		}
+		domainStr += httpCookie.Domain
+		hasDot := "FALSE"
+		if strings.HasPrefix(httpCookie.Domain, ".") {
+			hasDot = "TRUE"
+		}
+		secure := "FALSE"
+		if httpCookie.Secure {
+			secure = "TRUE"
+		}
+		fmt.Fprintf(f, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+			domainStr, hasDot, httpCookie.Path, secure,
+			expires, httpCookie.Name, httpCookie.Value)
+		written++
+	}
+
+	// Extract unfiltered domains (with skip-prefix filtering)
+	for _, domain := range domains {
+		seq := kooky.TraverseCookies(ctx, kooky.Valid, kooky.DomainHasSuffix(domain))
+		for cookie := range seq.OnlyCookies() {
+			if !shouldSkip(cookie.Name) {
+				writeCookie(cookie)
+			}
+		}
+	}
+
+	// Extract filtered domain with name whitelist
+	if filteredDomain != "" && len(allowedNames) > 0 {
+		seq := kooky.TraverseCookies(ctx, kooky.Valid, kooky.DomainHasSuffix(filteredDomain))
+		for cookie := range seq.OnlyCookies() {
+			if allowedNames[cookie.Name] {
+				writeCookie(cookie)
+			}
+		}
+	}
+
+	f.Close()
+
+	info, err := os.Stat(cookiesPath)
+	if err != nil || info.Size() < 30 {
+		os.Remove(cookiesPath)
+		return ""
+	}
+
+	cachedFile = cookiesPath
+	cachedAt = time.Now()
+	return cookiesPath
 }
 
 // ExtractSiteCookies extracts cookies for a specific site URL.
