@@ -128,15 +128,34 @@ The config file is created automatically on first run.
 | `esc`        | Go back       |
 | `ctrl+c`     | Quit          |
 
-## Pro Features (coming soon)
+## Desktop App
 
-Yaria Pro adds **Mantorex** -- a torrent search and streaming engine:
+**Yaria Desktop** is a cross-platform GUI app built with Wails (Go + WebView):
 
-- Search 8 torrent providers simultaneously
-- Stream torrents directly in your browser (WebUI)
-- Stream to mpv/vlc (TUI)
-- Background torrent download daemon
-- Library with resume playback
+- Video & audio downloader with format selection and download queue
+- Local media library with folder scanning, thumbnails, and TMDB metadata
+- Remote media browsing via SSH/SFTP and SMB
+- LAN media server (stream to phones, tablets, smart TVs)
+- DLNA/UPnP for smart TV discovery
+- Built-in video player with keyboard controls and subtitle support
+- Inter font, page transitions, glassmorphism UI
+
+Available at [yaria.xyz](https://yaria.xyz).
+
+## Pro Features
+
+Yaria Pro adds **Mantorex** -- a torrent search, streaming, and media center:
+
+- Search 11 torrent providers simultaneously with mirror fallback
+- Stream torrents directly in the built-in player with auto-transcode
+- Background torrent download daemon with pause/resume
+- Library with watch progress, Continue Watching, and episode tracking
+- Local media library with FFprobe analysis and TMDB enrichment
+- Remote sources (SSH/SFTP, SMB) with network device discovery
+- Media server with embedded web UI and PIN authentication
+- DLNA/UPnP server for smart TVs and game consoles
+- Music library with embedded metadata and album art
+- NFO file support (Kodi-compatible read/write)
 
 ## Build
 

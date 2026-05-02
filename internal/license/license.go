@@ -15,10 +15,10 @@ import (
 const (
 	// ValidationEndpoint is the URL to validate license keys against.
 	// Yaria website API endpoint.
-	ValidationEndpoint = "https://yaria.app/api/validate"
+	ValidationEndpoint = "https://yaria.xyz/api/validate"
 
 	// ActivationEndpoint is the URL to activate (bind) a key to a device.
-	ActivationEndpoint = "https://yaria.app/api/activate"
+	ActivationEndpoint = "https://yaria.xyz/api/activate"
 
 	// CacheDuration is how long a validated license is trusted offline.
 	CacheDuration = 7 * 24 * time.Hour // 7 days

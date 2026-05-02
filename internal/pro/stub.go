@@ -25,7 +25,7 @@ func RunCLI(args []string) {
 	fmt.Println()
 	dimSt := lipgloss.NewStyle().Faint(true)
 	fmt.Println(dimSt.Render("  Mantorex is available in the official Yaria Pro binary."))
-	fmt.Println(dimSt.Render("  Download it from yaria.app"))
+	fmt.Println(dimSt.Render("  Download it from yaria.xyz"))
 	fmt.Println()
 	os.Exit(1)
 }
@@ -40,7 +40,7 @@ func RunInteractive() {
 	dimSt := lipgloss.NewStyle().Faint(true)
 	_, deviceSummary := license.GetDeviceInfo()
 	fmt.Println(dimSt.Render("  Mantorex is available in the official Yaria Pro binary."))
-	fmt.Println(dimSt.Render("  Download it from yaria.app"))
+	fmt.Println(dimSt.Render("  Download it from yaria.xyz"))
 	fmt.Println(dimSt.Render("  This device: " + deviceSummary))
 	fmt.Println()
 	fmt.Println(dimSt.Render("  Press Enter to continue..."))
