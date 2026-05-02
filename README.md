@@ -32,7 +32,7 @@ yaria download --extract-audio https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ### Build from source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/yaria.git
+git clone https://github.com/zsnero/yaria.git
 cd yaria
 make build
 ```
@@ -140,7 +140,7 @@ The config file is created automatically on first run.
 - Built-in video player with keyboard controls and subtitle support
 - Inter font, page transitions, glassmorphism UI
 
-Available at [yaria.xyz](https://yaria.xyz).
+Available at [yaria.live](https://yaria.live).
 
 ## Pro Features
 

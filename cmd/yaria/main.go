@@ -148,7 +148,7 @@ func printUsage() {
 	fmt.Println("  yaria mantorex --help                Show Mantorex help")
 	fmt.Println()
 	fmt.Println(h.Render("License:"))
-	fmt.Println("  Purchase a Pro key at " + lipgloss.NewStyle().Bold(true).Render("yaria.xyz"))
+	fmt.Println("  Purchase a Pro key at " + lipgloss.NewStyle().Bold(true).Render("yaria.live"))
 }
 
 func getDefaultPlayer() string {
@@ -261,7 +261,7 @@ func main() {
 			_, deviceSummary := license.GetDeviceInfo()
 			dimSt := lipgloss.NewStyle().Faint(true)
 			fmt.Println(dimSt.Render("  Activate with: yaria activate <key>"))
-			fmt.Println(dimSt.Render("  Purchase a key at yaria.xyz"))
+			fmt.Println(dimSt.Render("  Purchase a key at yaria.live"))
 			fmt.Println(dimSt.Render("  Each key is valid for one device only"))
 			fmt.Println(dimSt.Render("  This device: " + deviceSummary))
 			fmt.Println()
@@ -321,7 +321,7 @@ func main() {
 			fmt.Println(h.Render("Device:  "), deviceSummary)
 			fmt.Println(h.Render("ID:      "), dimSt.Render(deviceID))
 			fmt.Println()
-			fmt.Println("  Purchase a key at yaria.xyz to unlock Mantorex")
+			fmt.Println("  Purchase a key at yaria.live to unlock Mantorex")
 			fmt.Println("  Each key is valid for one device only")
 		}
 

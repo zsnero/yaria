@@ -337,10 +337,10 @@ func (m *model) View() string {
 
 		if !pro.Available() {
 			panel.WriteString("\n")
-			panel.WriteString(dimSt.Align(lipgloss.Center).Render("Mantorex requires the official Pro build from yaria.xyz"))
+			panel.WriteString(dimSt.Align(lipgloss.Center).Render("Mantorex requires the official Pro build from yaria.live"))
 		} else if !m.isPro {
 			panel.WriteString("\n")
-			panel.WriteString(dimSt.Align(lipgloss.Center).Render("Purchase a key at yaria.xyz to unlock Mantorex"))
+			panel.WriteString(dimSt.Align(lipgloss.Center).Render("Purchase a key at yaria.live to unlock Mantorex"))
 			panel.WriteString("\n")
 			panel.WriteString(dimSt.Align(lipgloss.Center).Render("Each key is valid for one device only"))
 		}
@@ -353,7 +353,7 @@ func (m *model) View() string {
 	case activateKeyState:
 		panel.WriteString(headerSt.Render("Enter License Key"))
 		panel.WriteString("\n")
-		panel.WriteString(dimSt.Align(lipgloss.Center).Render("Paste your license key from yaria.xyz"))
+		panel.WriteString(dimSt.Align(lipgloss.Center).Render("Paste your license key from yaria.live"))
 		panel.WriteString("\n")
 		_, deviceSummary := license.GetDeviceInfo()
 		panel.WriteString(dimSt.Align(lipgloss.Center).Render("This key will be bound to: " + deviceSummary))
