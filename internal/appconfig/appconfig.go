@@ -194,6 +194,92 @@ func SetProxyAddr(addr string) error {
 	return Save()
 }
 
+// --- Media Library ---
+
+// MediaMovieDirs returns the configured movie directory paths.
+func MediaMovieDirs() []string {
+	Init()
+	return v.GetStringSlice("media_library.movie_dirs")
+}
+
+// SetMediaMovieDirs sets and saves the movie directory paths.
+func SetMediaMovieDirs(dirs []string) error {
+	Init()
+	v.Set("media_library.movie_dirs", dirs)
+	return Save()
+}
+
+// MediaTVDirs returns the configured TV show directory paths.
+func MediaTVDirs() []string {
+	Init()
+	return v.GetStringSlice("media_library.tv_dirs")
+}
+
+// SetMediaTVDirs sets and saves the TV show directory paths.
+func SetMediaTVDirs(dirs []string) error {
+	Init()
+	v.Set("media_library.tv_dirs", dirs)
+	return Save()
+}
+
+// MediaVideoDirs returns catch-all video directory paths.
+func MediaVideoDirs() []string {
+	Init()
+	return v.GetStringSlice("media_library.video_dirs")
+}
+
+// SetMediaVideoDirs sets and saves catch-all video directory paths.
+func SetMediaVideoDirs(dirs []string) error {
+	Init()
+	v.Set("media_library.video_dirs", dirs)
+	return Save()
+}
+
+// --- Media Server ---
+
+// MediaServerEnabled returns whether the LAN media server is enabled.
+func MediaServerEnabled() bool {
+	Init()
+	return v.GetBool("media_server.enabled")
+}
+
+// SetMediaServerEnabled sets and saves the media server enabled state.
+func SetMediaServerEnabled(enabled bool) error {
+	Init()
+	v.Set("media_server.enabled", enabled)
+	return Save()
+}
+
+// MediaServerPort returns the port for the LAN media server.
+func MediaServerPort() int {
+	Init()
+	port := v.GetInt("media_server.port")
+	if port == 0 {
+		return 8096
+	}
+	return port
+}
+
+// SetMediaServerPort sets and saves the media server port.
+func SetMediaServerPort(port int) error {
+	Init()
+	v.Set("media_server.port", port)
+	return Save()
+}
+
+// MediaServerPin returns the PIN for media server access (empty = no auth).
+func MediaServerPin() string {
+	Init()
+	return v.GetString("media_server.pin")
+}
+
+// SetMediaServerPin sets and saves the media server PIN.
+func SetMediaServerPin(pin string) error {
+	Init()
+	v.Set("media_server.pin", pin)
+	return Save()
+}
+
 // --- Speed limit ---
 
 // SpeedLimit returns the download speed limit in bytes/sec (0 = unlimited).

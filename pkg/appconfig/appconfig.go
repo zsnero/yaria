@@ -31,6 +31,24 @@ func SetProxyAddr(addr string) error { return appconfig.SetProxyAddr(addr) }
 func SpeedLimit() int64                { return appconfig.SpeedLimit() }
 func SetSpeedLimit(limit int64) error  { return appconfig.SetSpeedLimit(limit) }
 
+// --- Media Server ---
+
+func MediaServerEnabled() bool              { return appconfig.MediaServerEnabled() }
+func SetMediaServerEnabled(b bool) error    { return appconfig.SetMediaServerEnabled(b) }
+func MediaServerPort() int                  { return appconfig.MediaServerPort() }
+func SetMediaServerPort(p int) error        { return appconfig.SetMediaServerPort(p) }
+func MediaServerPin() string                { return appconfig.MediaServerPin() }
+func SetMediaServerPin(p string) error      { return appconfig.SetMediaServerPin(p) }
+
+// --- Media Library ---
+
+func MediaMovieDirs() []string              { return appconfig.MediaMovieDirs() }
+func SetMediaMovieDirs(dirs []string) error { return appconfig.SetMediaMovieDirs(dirs) }
+func MediaTVDirs() []string                 { return appconfig.MediaTVDirs() }
+func SetMediaTVDirs(dirs []string) error    { return appconfig.SetMediaTVDirs(dirs) }
+func MediaVideoDirs() []string              { return appconfig.MediaVideoDirs() }
+func SetMediaVideoDirs(dirs []string) error { return appconfig.SetMediaVideoDirs(dirs) }
+
 type MantorexConfig = appconfig.MantorexConfig
 
 func GetMantorexConfig() MantorexConfig { return appconfig.GetMantorexConfig() }
