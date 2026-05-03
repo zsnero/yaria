@@ -1,0 +1,35 @@
+{
+  "name": "@zsnero/yaria",
+  "version": "1.1.0",
+  "description": "The fastest video and audio downloader for your terminal",
+  "keywords": [
+    "video",
+    "downloader",
+    "youtube",
+    "audio",
+    "yt-dlp",
+    "cli",
+    "terminal"
+  ],
+  "homepage": "https://yaria.live",
+  "bugs": {
+    "url": "https://github.com/zsnero/yaria/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zsnero/yaria.git"
+  },
+  "license": "MIT",
+  "author": "zsnero",
+  "bin": {
+    "yaria": "bin/yaria"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md"
+  ]
+}
