@@ -13,6 +13,11 @@ internal/mantorex/
 internal/pro/mantorex.go
 pkg/mantorex/
 
+# npm dist (compiled binaries)
+npm/dist/
+npm/bin/yaria.exe
+npm/node_modules/
+
 # Private docs
 DEVELOPER_GUIDE.md
 DOCUMENTATION.md
