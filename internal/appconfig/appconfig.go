@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/spf13/viper"
@@ -108,10 +109,29 @@ func SetYariaTheme(theme string) error {
 
 // --- Mantorex settings ---
 
+// expandTilde expands ~ to the user's home directory.
+func expandTilde(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
+// expandTildeSlice expands ~ in each path in a slice.
+func expandTildeSlice(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = expandTilde(p)
+	}
+	return out
+}
+
 // MantorexDataDir returns the Mantorex download directory.
 func MantorexDataDir() string {
 	Init()
-	return v.GetString("mantorex.data_dir")
+	return expandTilde(v.GetString("mantorex.data_dir"))
 }
 
 // MantorexResultsLimit returns the max search results.
@@ -199,7 +219,7 @@ func SetProxyAddr(addr string) error {
 // MediaMovieDirs returns the configured movie directory paths.
 func MediaMovieDirs() []string {
 	Init()
-	return v.GetStringSlice("media_library.movie_dirs")
+	return expandTildeSlice(v.GetStringSlice("media_library.movie_dirs"))
 }
 
 // SetMediaMovieDirs sets and saves the movie directory paths.
@@ -212,7 +232,7 @@ func SetMediaMovieDirs(dirs []string) error {
 // MediaTVDirs returns the configured TV show directory paths.
 func MediaTVDirs() []string {
 	Init()
-	return v.GetStringSlice("media_library.tv_dirs")
+	return expandTildeSlice(v.GetStringSlice("media_library.tv_dirs"))
 }
 
 // SetMediaTVDirs sets and saves the TV show directory paths.
@@ -225,7 +245,7 @@ func SetMediaTVDirs(dirs []string) error {
 // MediaVideoDirs returns catch-all video directory paths.
 func MediaVideoDirs() []string {
 	Init()
-	return v.GetStringSlice("media_library.video_dirs")
+	return expandTildeSlice(v.GetStringSlice("media_library.video_dirs"))
 }
 
 // SetMediaVideoDirs sets and saves catch-all video directory paths.
