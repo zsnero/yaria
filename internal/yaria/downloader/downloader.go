@@ -552,6 +552,7 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		"--no-warnings",
 		"--no-playlist",
 		"--user-agent", userAgent,
+		"--legacy-server-connect",
 	}
 
 	// Add site-specific headers
@@ -570,6 +571,9 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 
 	metaArgs = append(metaArgs, args...)
 	cmd := exec.Command(ytDlpCmd, metaArgs...)
+	// Disable curl_cffi so --legacy-server-connect works (curl_cffi has its own TLS stack
+	// that ignores the flag, causing TLS 1.3 failures on networks with DPI blocking)
+	cmd.Env = append(os.Environ(), "CURL_CFFI_DISABLE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if len(output) > 0 {
@@ -589,6 +593,9 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 				// Clear cookie cache and retry without cookies
 				cookies.ClearCache()
 				return "", "", fmt.Errorf("request too large (cookies file may be oversized). Cache cleared -- please try again")
+			case strings.Contains(errMsg, "SSLError"), strings.Contains(errMsg, "Connection reset"),
+				strings.Contains(errMsg, "curl: (35)"):
+				return "", "", fmt.Errorf("SSL/TLS connection failed. Your network may be blocking this site. Try using a VPN or proxy")
 			case strings.Contains(errMsg, "No video formats found"), strings.Contains(errMsg, "unsupported URL format"):
 				return "", "", fmt.Errorf("no video formats found. Try updating yt-dlp: pip install -U yt-dlp (or: sudo pacman -S yt-dlp)")
 			case strings.Contains(errMsg, "Requested format is not available"):
@@ -1024,6 +1031,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			"--no-mtime",
 			"--no-playlist",
 			"--user-agent", userAgent,
+			"--legacy-server-connect",
 			"--output", filepath.Join(tempDir, d.cfg.OutputTemplate),
 		)
 		// Extract cookies: kooky first, yt-dlp fallback
@@ -1109,7 +1117,8 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			if !userProvidedFormat {
 				// Use best quality format
 				if isProblematic {
-					cmdArgs = append(cmdArgs, "--format", "best[height<=1080]/best")
+					// Prefer HLS (m3u8) formats -- HTTPS direct URLs may be blocked by DPI/TLS inspection
+					cmdArgs = append(cmdArgs, "--format", "bestvideo[protocol=m3u8]+bestaudio[protocol=m3u8]/best[protocol=m3u8]/best[height<=1080]/best")
 				} else {
 					cmdArgs = append(cmdArgs, "--format", "bestvideo+bestaudio/best")
 				}
@@ -1137,6 +1146,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		cmd.Env = append(os.Environ(),
 			"PYTHONDONTWRITEBYTECODE=1",
 			"PYTHONUNBUFFERED=1",
+			"CURL_CFFI_DISABLE=1",
 		)
 
 		if err := cmd.Run(); err == nil {
@@ -1166,6 +1176,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 					"--no-mtime",
 					"--no-playlist",
 					"--user-agent", userAgent,
+					"--legacy-server-connect",
 					"--output", tempDir + "/" + d.cfg.OutputTemplate,
 				}
 				if d.cfg.CookieBrowser != "" {
@@ -1188,10 +1199,10 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				cmd.Stdout = d.cfg.Stdout
 				cmd.Stderr = d.cfg.Stderr
 
-				// Set environment variables for better performance
 				cmd.Env = append(os.Environ(),
 					"PYTHONDONTWRITEBYTECODE=1",
 					"PYTHONUNBUFFERED=1",
+					"CURL_CFFI_DISABLE=1",
 				)
 				if err := cmd.Run(); err == nil {
 					return true, nil
