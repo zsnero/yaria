@@ -22,6 +22,7 @@ type Config struct {
 	AudioFormat      string
 	Resolution       string
 	CookieBrowser    string
+	ContainerFormat  string // "mp4", "mkv", "webm" — used for --merge-output-format
 	DownloadLocation string
 }
 

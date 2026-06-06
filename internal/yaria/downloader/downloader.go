@@ -1124,6 +1124,15 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				}
 			}
 		}
+		// Merge into user-selected container format (default: mp4)
+		if !d.cfg.IsAudioOnly {
+			fmt := d.cfg.ContainerFormat
+			if fmt == "" {
+				fmt = "mp4"
+			}
+			cmdArgs = append(cmdArgs, "--merge-output-format", fmt)
+		}
+
 		cmdArgs = append(cmdArgs, args...)
 
 		if d.cfg.UseAria2c {
