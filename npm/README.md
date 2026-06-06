@@ -5,7 +5,7 @@ The fastest video and audio downloader for your terminal. Downloads from YouTube
 ## Install
 
 ```bash
-npm install -g yaria
+npm install -g @zsnero/yaria
 ```
 
 ## Usage
@@ -18,13 +18,22 @@ yaria https://www.youtube.com/watch?v=dQw4w9WgXcQ
 yaria
 
 # Audio only
-yaria download --extract-audio https://www.youtube.com/watch?v=dQw4w9WgXcQ
+yaria download -x --audio-format mp3 https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# List formats
+yaria download -F https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# Specific resolution
+yaria download -f "bestvideo[height<=720]+bestaudio" https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
+
+All yt-dlp flags are supported and passed through directly.
 
 ## Features
 
 - Downloads from **1000+ sites** via yt-dlp
-- **Multi-connection acceleration** with aria2c (32 concurrent fragments)
+- **Multi-connection acceleration** with aria2c (16 connections, 32 splits)
+- **Container format selection** -- output as mp4, mkv, or webm
 - **Interactive TUI** with format and resolution selection
 - **Background daemon** for queued downloads
 - **Cookie support** for age-restricted content

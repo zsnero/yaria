@@ -9,6 +9,7 @@ The fastest video and audio downloader for your terminal. Downloads from 1000+ s
 - **Interactive TUI** -- format selection, resolution picker, download progress
 - **Playlist support** -- download entire playlists with one command
 - **Audio extraction** -- download audio-only in MP3 or other formats
+- **Container format** -- output as mp4, mkv, or webm (default: mp4)
 - **Background daemon** -- queue downloads and let them run in the background
 - **Auto-dependency management** -- downloads yt-dlp and aria2c automatically if not installed
 - **Cookie support** -- auto-detects your browser for age-restricted and login-required content
@@ -28,6 +29,12 @@ yaria download --extract-audio https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 ## Installation
+
+### npm (recommended)
+
+```bash
+npm install -g @zsnero/yaria
+```
 
 ### Build from source
 
@@ -61,8 +68,11 @@ yaria --version                    Show version
 | ---------------------- | ----------------------------------------------------- |
 | `yaria`                | Interactive menu                                      |
 | `yaria download`       | Video downloader TUI with format/resolution selection |
-| `yaria download <URL>` | Direct CLI download                                   |
+| `yaria download <URL>` | Direct CLI download (all yt-dlp flags supported)      |
 | `yaria <URL>`          | Shortcut for `yaria download <URL>`                   |
+| `yaria <magnet>`       | Stream torrent via mpv/vlc                            |
+| `yaria activate <key>` | Activate a Pro license key                            |
+| `yaria deactivate`     | Remove stored license                                 |
 | `yaria status`         | Show license and device info                          |
 | `yaria --help`         | Help                                                  |
 | `yaria --version`      | Version                                               |
