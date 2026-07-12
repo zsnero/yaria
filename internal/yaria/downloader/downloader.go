@@ -1,7 +1,9 @@
 package downloader
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 
 	"yaria/internal/yaria/config"
 	"yaria/internal/yaria/cookies"
+	"yaria/internal/yaria/procexec"
 
 	"github.com/google/go-github/v62/github"
 )
@@ -45,7 +48,9 @@ type Format struct {
 
 // Implements the Downloader interface
 type YTDLPDownloader struct {
-	cfg *config.Config
+	cfg        *config.Config
+	ffmpegPath string // directory or binary path for --ffmpeg-location
+	depsDir    string
 }
 
 func New(cfg *config.Config) (*YTDLPDownloader, error) {
@@ -95,6 +100,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		} else if shouldCheckVersions {
 			// Check yt-dlp version
 			cmd := exec.Command(ytDlpPath, "--version")
+			procexec.HideConsole(cmd)
 			localVersion, err := cmd.Output()
 			if err != nil {
 				fmt.Fprintf(cfg.Stderr, "Warning: Failed to check yt-dlp version: %v\n", err)
@@ -179,6 +185,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		} else if shouldCheckVersions {
 			// Check aria2 version
 			cmd := exec.Command(aria2Path, "--version")
+			procexec.HideConsole(cmd)
 			localVersion, err := cmd.Output()
 			if err != nil {
 				fmt.Fprintf(cfg.Stderr, "Warning: Failed to check aria2 version: %v\n", err)
@@ -423,6 +430,7 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 
 			// Install to dependencies folder
 			installCmd := exec.Command("npm", "install", "-g", "--prefix", depsDir, "webtorrent-cli")
+			procexec.HideConsole(installCmd)
 			installCmd.Stdout = cfg.Stderr
 			installCmd.Stderr = cfg.Stderr
 			err := installCmd.Run()
@@ -442,6 +450,9 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		}
 	}
 
+	// Ensure FFmpeg is available (required to merge video+audio into one file)
+	ffmpegDir := ensureFFmpeg(depsDir, cfg)
+
 	// Update PATH to include dependencies folder and bin directory
 	currentPath := os.Getenv("PATH")
 	binDir := filepath.Join(depsDir, "bin")
@@ -457,7 +468,223 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	if _, err := exec.LookPath(aria2Binary); err != nil {
 		cfg.UseAria2c = false
 	}
-	return &YTDLPDownloader{cfg: cfg}, nil
+	return &YTDLPDownloader{cfg: cfg, ffmpegPath: ffmpegDir, depsDir: depsDir}, nil
+}
+
+// ensureFFmpeg finds or downloads a static FFmpeg binary into depsDir.
+// Returns the directory containing ffmpeg (for yt-dlp --ffmpeg-location).
+func ensureFFmpeg(depsDir string, cfg *config.Config) string {
+	ffmpegName := "ffmpeg"
+	if runtime.GOOS == "windows" {
+		ffmpegName = "ffmpeg.exe"
+	}
+	bundled := filepath.Join(depsDir, ffmpegName)
+	if _, err := os.Stat(bundled); err == nil {
+		return depsDir
+	}
+	if p, err := exec.LookPath("ffmpeg"); err == nil {
+		return filepath.Dir(p)
+	}
+
+	// Download static build
+	fmt.Fprintf(cfg.Stderr, "FFmpeg not found — downloading (needed to merge video+audio)...\n")
+	var downloadURL string
+	switch {
+	case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
+		downloadURL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+	case runtime.GOOS == "linux" && runtime.GOARCH == "amd64":
+		downloadURL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+	case runtime.GOOS == "linux" && runtime.GOARCH == "arm64":
+		downloadURL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "amd64":
+		downloadURL = "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-darwin-x64.gz"
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
+		downloadURL = "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-darwin-arm64.gz"
+	default:
+		fmt.Fprintf(cfg.Stderr, "WARNING: no FFmpeg build for %s/%s — downloads may stay as separate video/audio files\n", runtime.GOOS, runtime.GOARCH)
+		return ""
+	}
+
+	tmpFile := filepath.Join(depsDir, "ffmpeg_download.tmp")
+	if err := downloadFile(downloadURL, tmpFile, cfg); err != nil {
+		fmt.Fprintf(cfg.Stderr, "WARNING: FFmpeg download failed: %v\n", err)
+		return ""
+	}
+	defer os.Remove(tmpFile)
+
+	ffmpegDest := filepath.Join(depsDir, ffmpegName)
+	ffprobeName := "ffprobe"
+	if runtime.GOOS == "windows" {
+		ffprobeName = "ffprobe.exe"
+	}
+	ffprobeDest := filepath.Join(depsDir, ffprobeName)
+
+	var extractErr error
+	switch {
+	case strings.HasSuffix(downloadURL, ".zip"):
+		extractErr = extractBinariesFromZip(tmpFile, map[string]string{ffmpegName: ffmpegDest, ffprobeName: ffprobeDest})
+	case strings.HasSuffix(downloadURL, ".tar.xz"):
+		extractErr = extractBinariesFromTarXz(tmpFile, map[string]string{"ffmpeg": ffmpegDest, "ffprobe": ffprobeDest})
+	case strings.HasSuffix(downloadURL, ".gz"):
+		extractErr = extractGzipFile(tmpFile, ffmpegDest)
+	}
+	if extractErr != nil {
+		fmt.Fprintf(cfg.Stderr, "WARNING: FFmpeg extract failed: %v\n", extractErr)
+		return ""
+	}
+	os.Chmod(ffmpegDest, 0755)
+	if _, err := os.Stat(ffprobeDest); err == nil {
+		os.Chmod(ffprobeDest, 0755)
+	}
+	fmt.Fprintf(cfg.Stderr, "FFmpeg installed to %s\n", depsDir)
+	return depsDir
+}
+
+func downloadFile(url, dest string, cfg *config.Config) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func extractBinariesFromZip(zipPath string, want map[string]string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	found := map[string]bool{}
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		base := filepath.Base(f.Name)
+		dest, ok := want[base]
+		if !ok || found[base] {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(dest)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		_, err = io.Copy(out, rc)
+		out.Close()
+		rc.Close()
+		if err != nil {
+			return err
+		}
+		found[base] = true
+		if len(found) == len(want) {
+			break
+		}
+	}
+	// Need at least the primary binary (first key that looks like ffmpeg)
+	for name := range want {
+		if strings.HasPrefix(name, "ffmpeg") && !found[name] {
+			return fmt.Errorf("ffmpeg not found in zip")
+		}
+	}
+	return nil
+}
+
+func extractBinariesFromTarXz(archivePath string, want map[string]string) error {
+	xzCmd := exec.Command("xz", "-d", "-c", archivePath)
+	procexec.HideConsole(xzCmd)
+	stdout, err := xzCmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := xzCmd.Start(); err != nil {
+		return fmt.Errorf("xz not found: %w", err)
+	}
+	found := map[string]bool{}
+	tr := tar.NewReader(stdout)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			xzCmd.Wait()
+			return err
+		}
+		if hdr.FileInfo().IsDir() {
+			continue
+		}
+		base := filepath.Base(hdr.Name)
+		dest, ok := want[base]
+		if !ok || found[base] {
+			continue
+		}
+		out, err := os.Create(dest)
+		if err != nil {
+			xzCmd.Wait()
+			return err
+		}
+		_, err = io.Copy(out, tr)
+		out.Close()
+		if err != nil {
+			xzCmd.Wait()
+			return err
+		}
+		found[base] = true
+		if len(found) == len(want) {
+			break
+		}
+	}
+	xzCmd.Wait()
+	if !found["ffmpeg"] {
+		return fmt.Errorf("ffmpeg not found in archive")
+	}
+	return nil
+}
+
+func extractGzipFile(gzPath, dest string) error {
+	f, err := os.Open(gzPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, gz)
+	return err
+}
+
+// ffmpegArgs returns yt-dlp flags so merges/postprocessing use our FFmpeg.
+func (d *YTDLPDownloader) ffmpegArgs() []string {
+	if d.ffmpegPath == "" {
+		// Try again at runtime
+		if p, err := exec.LookPath("ffmpeg"); err == nil {
+			return []string{"--ffmpeg-location", filepath.Dir(p)}
+		}
+		return nil
+	}
+	return []string{"--ffmpeg-location", d.ffmpegPath}
 }
 
 // extractDenoFromZip extracts the deno binary from a zip archive
@@ -532,7 +759,8 @@ func readFile(path string) string {
 */
 
 // Fetches playlist info and video title in a SINGLE yt-dlp call.
-// This halves the metadata fetch time compared to two separate calls.
+// Tries without cookies first (fast; works for public videos), then with
+// cookies only if yt-dlp reports auth/bot/age-gate issues.
 func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	ytDlpCmd := "yt-dlp"
 	if runtime.GOOS == "windows" {
@@ -551,6 +779,7 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		"--print", "%(title)s|||%(playlist)s|||%(playlist_title)s|||%(playlist_count)s",
 		"--no-warnings",
 		"--no-playlist",
+		"--socket-timeout", "20",
 		"--user-agent", userAgent,
 		"--legacy-server-connect",
 	}
@@ -560,26 +789,41 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		metaArgs = append(metaArgs, getSiteHeaders(url)...)
 	}
 
-	// Extract cookies: try kooky (pure Go, works with locked browsers),
-	// fall back to yt-dlp's --cookies-from-browser
-	cookieBrowser := d.cfg.CookieBrowser
-	if cookieBrowser == "" {
-		cookieBrowser = DetectBrowser()
-	}
-	cookieArgs := cookies.GetYTDLPCookieArgs(url, cookieBrowser)
-	metaArgs = append(metaArgs, cookieArgs...)
-
 	metaArgs = append(metaArgs, args...)
-	cmd := exec.Command(ytDlpCmd, metaArgs...)
-	// Disable curl_cffi so --legacy-server-connect works (curl_cffi has its own TLS stack
-	// that ignores the flag, causing TLS 1.3 failures on networks with DPI blocking)
-	cmd.Env = append(os.Environ(), "CURL_CFFI_DISABLE=1")
-	output, err := cmd.CombinedOutput()
+
+	// Fast path: no cookies (avoids kooky/Edge DB hangs on Windows)
+	output, err := runYTDLPTimeout(ytDlpCmd, metaArgs, 45*time.Second)
+
+	// Auth/bot issues → try once with cookies
+	if err != nil && needsCookies(string(output), err) {
+		cookieBrowser := d.cfg.CookieBrowser
+		if cookieBrowser == "" {
+			cookieBrowser = DetectBrowser()
+		}
+		// Extract cookies with a short timeout so UI never hangs forever
+		cookieArgs := cookies.GetYTDLPCookieArgs(url, cookieBrowser)
+		if len(cookieArgs) > 0 {
+			withCookies := append([]string{}, metaArgs[:len(metaArgs)-len(args)]...)
+			withCookies = append(withCookies, cookieArgs...)
+			withCookies = append(withCookies, args...)
+			output2, err2 := runYTDLPTimeout(ytDlpCmd, withCookies, 45*time.Second)
+			if err2 == nil {
+				output, err = output2, nil
+			} else if isCookieDBError(string(output2)) {
+				// Cookie DB locked — keep original no-cookie error
+			} else {
+				output, err = output2, err2
+			}
+		}
+	}
+
 	if err != nil {
 		if len(output) > 0 {
 			errMsg := strings.TrimSpace(string(output))
 			// Helpful hints for common errors
 			switch {
+			case isCookieDBError(errMsg):
+				return "", "", fmt.Errorf("could not read browser cookies (close Chrome/Edge or log into YouTube in the browser, then try again)")
 			case strings.Contains(errMsg, "Unsupported URL"):
 				return "", "", fmt.Errorf("unsupported URL")
 			case strings.Contains(errMsg, "Video unavailable"):
@@ -600,6 +844,8 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 				return "", "", fmt.Errorf("no video formats found. Try updating yt-dlp: pip install -U yt-dlp (or: sudo pacman -S yt-dlp)")
 			case strings.Contains(errMsg, "Requested format is not available"):
 				return "", "", fmt.Errorf("requested format unavailable")
+			case strings.Contains(errMsg, "timed out"), strings.Contains(errMsg, "context deadline"):
+				return "", "", fmt.Errorf("metadata fetch timed out. Check your network and try again")
 			}
 			if len(errMsg) > 300 {
 				errMsg = errMsg[:300] + "..."
@@ -710,6 +956,7 @@ func (d *YTDLPDownloader) StreamTorrent(magnetLink string) error {
 
 	// Stream with webtorrent
 	cmd := exec.Command(webtorrentPath, magnetLink, "--"+player)
+	procexec.HideConsole(cmd)
 	cmd.Stdout = d.cfg.Stdout
 	cmd.Stderr = d.cfg.Stderr
 	cmd.Stdin = os.Stdin
@@ -742,6 +989,7 @@ func (d *YTDLPDownloader) GetThumbnail(args []string, tempDir string) (string, e
 	thumbnailArgs = append(thumbnailArgs, args...)
 
 	cmd := exec.Command(ytDlpCmd, thumbnailArgs...)
+	procexec.HideConsole(cmd)
 	err := cmd.Run()
 	if err != nil {
 		// If thumbnail extraction fails, return empty path (not critical error)
@@ -766,6 +1014,7 @@ func (d *YTDLPDownloader) GetOutputFilename(args []string, tempDir string) (stri
 		ytDlpCmd = "yt-dlp.exe"
 	}
 	cmd := exec.Command(ytDlpCmd, append([]string{"--print", "filename", "--output", tempDir + "/" + d.cfg.OutputTemplate}, args...)...)
+	procexec.HideConsole(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -796,12 +1045,17 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 	cookieArgs := cookies.GetYTDLPCookieArgs(url, cookieBrowser)
 	cmdArgs = append(cmdArgs, cookieArgs...)
 	cmdArgs = append(cmdArgs, url)
-	cmd := exec.Command(ytDlpCmd, cmdArgs...)
-	output, err := cmd.CombinedOutput()
+	output, err := runYTDLP(ytDlpCmd, cmdArgs)
+	if err != nil && isCookieDBError(string(output)) && hasCookieArgs(cmdArgs) {
+		output, err = runYTDLP(ytDlpCmd, stripCookieArgs(cmdArgs))
+	}
 	if err != nil {
 		// Include stderr output in error message for better debugging
 		if len(output) > 0 {
 			errMsg := strings.TrimSpace(string(output))
+			if isCookieDBError(errMsg) {
+				return nil, fmt.Errorf("could not read browser cookies (close Chrome/Edge and try again)")
+			}
 			// Limit error message length
 			if len(errMsg) > 200 {
 				errMsg = errMsg[:200] + "..."
@@ -1034,12 +1288,10 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			"--legacy-server-connect",
 			"--output", filepath.Join(tempDir, d.cfg.OutputTemplate),
 		)
-		// Extract cookies: kooky first, yt-dlp fallback
-		dlCookieBrowser := d.cfg.CookieBrowser
-		if dlCookieBrowser == "" {
-			dlCookieBrowser = DetectBrowser()
-		}
-		dlCookieArgs := cookies.GetYTDLPCookieArgs(strings.Join(args, " "), dlCookieBrowser)
+		// Attach browser cookies only if kooky can export quickly.
+		// Avoids Windows hangs from --cookies-from-browser / locked Edge DB.
+		// Public YouTube works without cookies; auth failures retry later without them.
+		dlCookieArgs := cookies.GetYTDLPCookieArgs(strings.Join(args, " "), d.cfg.CookieBrowser)
 		cmdArgs = append(cmdArgs, dlCookieArgs...)
 
 		// Add site-specific headers and settings
@@ -1133,6 +1385,9 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			cmdArgs = append(cmdArgs, "--merge-output-format", fmt)
 		}
 
+		// Tell yt-dlp where FFmpeg lives so it can merge video+audio
+		cmdArgs = append(cmdArgs, d.ffmpegArgs()...)
+
 		cmdArgs = append(cmdArgs, args...)
 
 		if d.cfg.UseAria2c {
@@ -1143,86 +1398,170 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			cmdArgs = append(cmdArgs, "--downloader", aria2Cmd, "--downloader-args", "aria2c:"+d.cfg.Aria2cArgs)
 		}
 
-		cmd := exec.Command(ytDlpCmd, cmdArgs...)
-		cmd.Stdout = d.cfg.Stdout
-		cmd.Stderr = d.cfg.Stderr
-
-		// Set environment variables for better performance
-		// NOTE: Do NOT set PYTHONNOUSERSITE=1 here -- it prevents yt-dlp
-		// from finding pip-installed packages (e.g. newer yt-dlp in user
-		// site-packages), causing it to fall back to an outdated system
-		// version that may fail on modern YouTube.
-		cmd.Env = append(os.Environ(),
-			"PYTHONDONTWRITEBYTECODE=1",
-			"PYTHONUNBUFFERED=1",
-			"CURL_CFFI_DISABLE=1",
-		)
-
-		if err := cmd.Run(); err == nil {
+		stderrBuf := &strings.Builder{}
+		err := runYTDLPStreaming(ytDlpCmd, cmdArgs, d.cfg.Stdout, io.MultiWriter(d.cfg.Stderr, stderrBuf))
+		if err == nil {
 			return true, nil
-		} else {
-			if attempt < d.cfg.MaxRetries {
-				fmt.Fprintf(d.cfg.Stderr, "WARNING: Download attempt %d/%d failed: %v. Retrying...\n", attempt, d.cfg.MaxRetries, err)
-				d.cfg.WaitBeforeRetry(attempt)
-				continue
-			}
-			fmt.Fprintf(d.cfg.Stderr, "WARNING: All %d attempts failed. Trying fallback format...\n", d.cfg.MaxRetries)
-			// Try fallback format on last attempt
-			if attempt == d.cfg.MaxRetries {
-				fallbackArgs := []string{
-					"--no-overwrites",
-					"--geo-bypass",
-					"--concurrent-fragments", "8",
-					"--buffer-size", "32K",
-					"--http-chunk-size", "4M",
-					"--no-warnings",
-					"--progress",
-					"--newline",
-					"--extractor-retries", "3",
-					"--fragment-retries", "5",
-					"--retries", "3",
-					"--socket-timeout", "30",
-					"--no-mtime",
-					"--no-playlist",
-					"--user-agent", userAgent,
-					"--legacy-server-connect",
-					"--output", tempDir + "/" + d.cfg.OutputTemplate,
-				}
-				if d.cfg.CookieBrowser != "" {
-					fallbackArgs = append(fallbackArgs, "--cookies-from-browser", d.cfg.CookieBrowser)
-				}
-				if d.cfg.IsAudioOnly {
-					fallbackArgs = append(fallbackArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
-				} else {
-					fallbackArgs = append(fallbackArgs, "--format", "bestvideo[height<=1080]+bestaudio/best")
-				}
-				fallbackArgs = append(fallbackArgs, args...)
-				if d.cfg.UseAria2c {
-					aria2Cmd := "aria2c"
-					if runtime.GOOS == "windows" {
-						aria2Cmd = "aria2c.exe"
-					}
-					fallbackArgs = append(fallbackArgs, "--downloader", aria2Cmd, "--downloader-args", "aria2c:"+d.cfg.Aria2cArgs)
-				}
-				cmd := exec.Command(ytDlpCmd, fallbackArgs...)
-				cmd.Stdout = d.cfg.Stdout
-				cmd.Stderr = d.cfg.Stderr
+		}
 
-				cmd.Env = append(os.Environ(),
-					"PYTHONDONTWRITEBYTECODE=1",
-					"PYTHONUNBUFFERED=1",
-					"CURL_CFFI_DISABLE=1",
-				)
-				if err := cmd.Run(); err == nil {
-					return true, nil
+		// Cookie DB locked (Chrome open) — drop cookies and retry this attempt once.
+		if isCookieDBError(stderrBuf.String()) && hasCookieArgs(cmdArgs) {
+			fmt.Fprintf(d.cfg.Stderr, "WARNING: browser cookie DB locked; retrying download without cookies\n")
+			noCookieArgs := stripCookieArgs(cmdArgs)
+			stderrBuf.Reset()
+			if err2 := runYTDLPStreaming(ytDlpCmd, noCookieArgs, d.cfg.Stdout, io.MultiWriter(d.cfg.Stderr, stderrBuf)); err2 == nil {
+				return true, nil
+			}
+			// Keep going into normal retry/fallback with the latest error text
+			err = err
+		}
+
+		if attempt < d.cfg.MaxRetries {
+			fmt.Fprintf(d.cfg.Stderr, "WARNING: Download attempt %d/%d failed: %v. Retrying...\n", attempt, d.cfg.MaxRetries, err)
+			d.cfg.WaitBeforeRetry(attempt)
+			continue
+		}
+		fmt.Fprintf(d.cfg.Stderr, "WARNING: All %d attempts failed. Trying fallback format...\n", d.cfg.MaxRetries)
+		// Try fallback format on last attempt (no cookies — avoid locked Chrome DB)
+		if attempt == d.cfg.MaxRetries {
+			fallbackArgs := []string{
+				"--no-overwrites",
+				"--geo-bypass",
+				"--concurrent-fragments", "8",
+				"--buffer-size", "32K",
+				"--http-chunk-size", "4M",
+				"--no-warnings",
+				"--progress",
+				"--newline",
+				"--extractor-retries", "3",
+				"--fragment-retries", "5",
+				"--retries", "3",
+				"--socket-timeout", "30",
+				"--no-mtime",
+				"--no-playlist",
+				"--user-agent", userAgent,
+				"--legacy-server-connect",
+				"--output", tempDir + "/" + d.cfg.OutputTemplate,
+			}
+			if d.cfg.IsAudioOnly {
+				fallbackArgs = append(fallbackArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
+			} else {
+				fallbackArgs = append(fallbackArgs, "--format", "bestvideo[height<=1080]+bestaudio/best", "--merge-output-format", "mp4")
+			}
+			fallbackArgs = append(fallbackArgs, d.ffmpegArgs()...)
+			fallbackArgs = append(fallbackArgs, args...)
+			if d.cfg.UseAria2c {
+				aria2Cmd := "aria2c"
+				if runtime.GOOS == "windows" {
+					aria2Cmd = "aria2c.exe"
 				}
+				fallbackArgs = append(fallbackArgs, "--downloader", aria2Cmd, "--downloader-args", "aria2c:"+d.cfg.Aria2cArgs)
 			}
-			if attempt < d.cfg.MaxRetries {
-				d.cfg.WaitBeforeRetry(attempt)
+			if err := runYTDLPStreaming(ytDlpCmd, fallbackArgs, d.cfg.Stdout, d.cfg.Stderr); err == nil {
+				return true, nil
+			} else if isCookieDBError(stderrBuf.String()) {
+				return false, errors.New("could not read browser cookies (close Chrome/Edge and try again, or continue without signing in)")
 			}
+		}
+		if attempt < d.cfg.MaxRetries {
+			d.cfg.WaitBeforeRetry(attempt)
 		}
 	}
 	return false, errors.New("all download attempts failed, including fallback")
+}
+
+// runYTDLP runs yt-dlp and returns combined output (no timeout).
+func runYTDLP(ytDlpCmd string, args []string) ([]byte, error) {
+	return runYTDLPTimeout(ytDlpCmd, args, 0)
+}
+
+// runYTDLPTimeout runs yt-dlp with an optional overall timeout.
+// timeout <= 0 means no deadline.
+func runYTDLPTimeout(ytDlpCmd string, args []string, timeout time.Duration) ([]byte, error) {
+	var cmd *exec.Cmd
+	if timeout > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		cmd = exec.CommandContext(ctx, ytDlpCmd, args...)
+	} else {
+		cmd = exec.Command(ytDlpCmd, args...)
+	}
+	procexec.HideConsole(cmd)
+	cmd.Env = append(os.Environ(), "CURL_CFFI_DISABLE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil && timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+		return out, fmt.Errorf("timed out after %s", timeout)
+	}
+	// CommandContext wraps deadline as "signal: killed" / ExitError — detect via ctx if needed
+	if err != nil && timeout > 0 && cmd.ProcessState != nil && !cmd.ProcessState.Success() {
+		if len(out) == 0 && strings.Contains(err.Error(), "killed") {
+			return out, fmt.Errorf("timed out after %s", timeout)
+		}
+	}
+	return out, err
+}
+
+// runYTDLPStreaming runs yt-dlp with live stdout/stderr (for progress UI).
+func runYTDLPStreaming(ytDlpCmd string, args []string, stdout, stderr io.Writer) error {
+	cmd := exec.Command(ytDlpCmd, args...)
+	procexec.HideConsole(cmd)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = append(os.Environ(),
+		"PYTHONDONTWRITEBYTECODE=1",
+		"PYTHONUNBUFFERED=1",
+		"CURL_CFFI_DISABLE=1",
+	)
+	return cmd.Run()
+}
+
+// needsCookies reports whether yt-dlp failed in a way that cookies might fix.
+func needsCookies(output string, err error) bool {
+	s := strings.ToLower(output)
+	if err != nil {
+		s += " " + strings.ToLower(err.Error())
+	}
+	return strings.Contains(s, "sign in") ||
+		strings.Contains(s, "not a bot") ||
+		strings.Contains(s, "age-restricted") ||
+		strings.Contains(s, "age restricted") ||
+		strings.Contains(s, "login required") ||
+		strings.Contains(s, "private video") ||
+		strings.Contains(s, "confirm your age")
+}
+
+func isCookieDBError(s string) bool {
+	s = strings.ToLower(s)
+	return (strings.Contains(s, "could not copy") && strings.Contains(s, "cookie")) ||
+		strings.Contains(s, "could not copy chrome cookie") ||
+		strings.Contains(s, "could not copy edge cookie") ||
+		(strings.Contains(s, "cookie database") && strings.Contains(s, "could not"))
+}
+
+func hasCookieArgs(args []string) bool {
+	for _, a := range args {
+		if a == "--cookies" || a == "--cookies-from-browser" {
+			return true
+		}
+	}
+	return false
+}
+
+func stripCookieArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	skipNext := false
+	for _, a := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "--cookies" || a == "--cookies-from-browser" {
+			skipNext = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // Splits a string into lines and trims whitespace
@@ -1256,9 +1595,9 @@ func DetectBrowser() string {
 
 	// --- Phase 1: Firefox-based forks (checked first, most likely to have real cookies) ---
 	type forkDef struct {
-		binaries  []string // binary names to check in PATH
+		binaries   []string // binary names to check in PATH
 		cookieDirs []string // profile directories (contain subdirs with cookies.sqlite)
-		ytdlpBase string   // "firefox" -- all Firefox forks use this
+		ytdlpBase  string   // "firefox" -- all Firefox forks use this
 	}
 
 	firefoxForks := []forkDef{
@@ -1324,9 +1663,9 @@ func DetectBrowser() string {
 
 	// --- Phase 2: Chromium-based forks (not natively in yt-dlp) ---
 	type chromeForkDef struct {
-		binaries  []string
+		binaries   []string
 		cookieDirs []string // contain "Default/Cookies" or similar
-		ytdlpBase string   // "chrome" or "chromium"
+		ytdlpBase  string   // "chrome" or "chromium"
 	}
 
 	chromeForks := []chromeForkDef{
@@ -1409,11 +1748,19 @@ func DetectBrowser() string {
 		if programFilesX86 == "" {
 			programFilesX86 = `C:\Program Files (x86)`
 		}
+		// Edge first: every Windows install has it; Chrome is optional.
+		// Check both Program Files and Program Files (x86) for Edge/Chrome.
 		standard = []stdBrowser{
-			{[]string{filepath.Join(programFiles, "Google", "Chrome", "Application", "chrome.exe")}, "chrome"},
+			{[]string{
+				filepath.Join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+			}, "edge"},
+			{[]string{
+				filepath.Join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+			}, "chrome"},
 			{[]string{filepath.Join(programFiles, "Mozilla Firefox", "firefox.exe")}, "firefox"},
 			{[]string{filepath.Join(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")}, "brave"},
-			{[]string{filepath.Join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe")}, "edge"},
 			{[]string{filepath.Join(localAppData, "Vivaldi", "Application", "vivaldi.exe")}, "vivaldi"},
 			{[]string{filepath.Join(programFiles, "Opera", "opera.exe")}, "opera"},
 		}

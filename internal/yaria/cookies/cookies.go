@@ -40,7 +40,8 @@ func ExtractCookiesFile(domains []string) string {
 
 	cookiesPath := getCookiesFilePath()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Keep short: locked browser DBs on Windows can block SQLite reads.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	// Write to file
@@ -80,16 +81,25 @@ func ExtractCookiesFile(domains []string) string {
 	}
 
 	for _, domain := range domains {
+		if ctx.Err() != nil {
+			break
+		}
 		seq := kooky.TraverseCookies(ctx, kooky.Valid, kooky.DomainHasSuffix(domain))
 		for cookie := range seq.OnlyCookies() {
+			if ctx.Err() != nil {
+				break
+			}
 			writeCookie(cookie)
 		}
 	}
 
 	// If no domains specified, extract all cookies
-	if len(domains) == 0 {
+	if len(domains) == 0 && ctx.Err() == nil {
 		seq := kooky.TraverseCookies(ctx, kooky.Valid)
 		for cookie := range seq.OnlyCookies() {
+			if ctx.Err() != nil {
+				break
+			}
 			writeCookie(cookie)
 		}
 	}
@@ -157,7 +167,9 @@ func ExtractCookiesFileFiltered(domains []string, filteredDomain string, allowed
 
 	cookiesPath := getCookiesFilePath()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Short timeout: locked Edge/Chrome DBs on Windows can block SQLite reads.
+	// Never hold the cache lock for longer than this overall budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	f, err := os.Create(cookiesPath)
@@ -202,8 +214,14 @@ func ExtractCookiesFileFiltered(domains []string, filteredDomain string, allowed
 
 	// Extract unfiltered domains (with skip-prefix filtering)
 	for _, domain := range domains {
+		if ctx.Err() != nil {
+			break
+		}
 		seq := kooky.TraverseCookies(ctx, kooky.Valid, kooky.DomainHasSuffix(domain))
 		for cookie := range seq.OnlyCookies() {
+			if ctx.Err() != nil {
+				break
+			}
 			if !shouldSkip(cookie.Name) {
 				writeCookie(cookie)
 			}
@@ -211,9 +229,12 @@ func ExtractCookiesFileFiltered(domains []string, filteredDomain string, allowed
 	}
 
 	// Extract filtered domain with name whitelist
-	if filteredDomain != "" && len(allowedNames) > 0 {
+	if filteredDomain != "" && len(allowedNames) > 0 && ctx.Err() == nil {
 		seq := kooky.TraverseCookies(ctx, kooky.Valid, kooky.DomainHasSuffix(filteredDomain))
 		for cookie := range seq.OnlyCookies() {
+			if ctx.Err() != nil {
+				break
+			}
 			if allowedNames[cookie.Name] {
 				writeCookie(cookie)
 			}
@@ -278,11 +299,16 @@ func extractDomain(url string) string {
 	return url
 }
 
-
-
 // GetYTDLPCookieArgs returns yt-dlp arguments for cookie authentication.
-// Tries kooky first (pure Go, works with locked browsers), falls back to
-// --cookies-from-browser (yt-dlp's Python-based extraction).
+// Tries kooky first (pure Go; can often read cookies while the browser is open),
+// falls back to yt-dlp's --cookies-from-browser only when a browser was detected.
+//
+// On a fresh install (no YouTube login cookies), kooky returns nothing and the
+// fallback may still fail if Edge/Chrome has the SQLite DB locked. Callers should
+// retry without cookie args when yt-dlp reports a cookie-DB copy error.
+//
+// Note: yt-dlp often says "Chrome cookie database" for any Chromium browser
+// (including Edge/Brave), so that message does not mean Chrome is installed.
 func GetYTDLPCookieArgs(url string, fallbackBrowser string) []string {
 	// Try kooky first
 	var cookiesFile string
@@ -301,15 +327,14 @@ func GetYTDLPCookieArgs(url string, fallbackBrowser string) []string {
 		}
 	}
 
-	// Fallback: use yt-dlp's --cookies-from-browser
-	if fallbackBrowser != "" {
-		return []string{"--cookies-from-browser", fallbackBrowser}
-	}
-
+	// Do NOT fall back to --cookies-from-browser here.
+	// On Windows, yt-dlp's browser cookie copy often hangs or fails while Edge
+	// is open, which freezes "Fetching..." in the GUI. Public videos work without
+	// cookies; auth/age-gated content uses kooky when cookies are readable.
+	// Callers that need --cookies-from-browser should pass it explicitly.
+	_ = fallbackBrowser
 	return nil
 }
-
-
 
 func init() {
 	// Ensure cookies file permissions are restrictive

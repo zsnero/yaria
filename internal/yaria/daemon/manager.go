@@ -18,6 +18,7 @@ import (
 	"yaria/internal/yaria/downloader"
 
 	"github.com/creack/pty"
+	"yaria/internal/yaria/procexec"
 )
 
 type managedDownload struct {
@@ -350,6 +351,7 @@ func (m *Manager) runDownload(md *managedDownload) {
 	}
 
 	cmd := exec.Command(ytDlpCmd, cmdArgs...)
+	procexec.HideConsole(cmd)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1", "TERM=dumb")
 
 	// Use a PTY (pseudo-terminal) so aria2c and yt-dlp think they're
@@ -359,6 +361,7 @@ func (m *Manager) runDownload(md *managedDownload) {
 	if err != nil {
 		// Fallback to pipes if PTY fails (e.g., on Windows)
 		cmd2 := exec.Command(ytDlpCmd, cmdArgs...)
+		procexec.HideConsole(cmd2)
 		cmd2.Env = cmd.Env
 		stdout, err2 := cmd2.StdoutPipe()
 		if err2 != nil {
