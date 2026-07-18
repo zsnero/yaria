@@ -31,7 +31,7 @@ type UserConfig struct {
 	Theme string `json:"theme"`
 }
 
-// LoadUserConfig loads persistent user preferences from app.yaml
+// LoadUserConfig loads persistent user preferences from app.toml
 func LoadUserConfig() UserConfig {
 	cfg := UserConfig{
 		Theme: appconfig.YariaTheme(),
@@ -42,7 +42,7 @@ func LoadUserConfig() UserConfig {
 	return cfg
 }
 
-// SaveUserConfig persists user preferences to app.yaml
+// SaveUserConfig persists user preferences to app.toml
 func SaveUserConfig(cfg UserConfig) error {
 	return appconfig.SetYariaTheme(cfg.Theme)
 }

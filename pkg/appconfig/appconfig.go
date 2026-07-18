@@ -49,6 +49,15 @@ func SetMediaTVDirs(dirs []string) error    { return appconfig.SetMediaTVDirs(di
 func MediaVideoDirs() []string              { return appconfig.MediaVideoDirs() }
 func SetMediaVideoDirs(dirs []string) error { return appconfig.SetMediaVideoDirs(dirs) }
 
+// --- Desktop UI ---
+
+type UISettings = appconfig.UISettings
+
+func GetUISettings() UISettings              { return appconfig.GetUISettings() }
+func SetUISettings(s UISettings) error       { return appconfig.SetUISettings(s) }
+func BlurIsSet() bool                        { return appconfig.BlurIsSet() }
+func UIConfigured() bool                     { return appconfig.UIConfigured() }
+
 type MantorexConfig = appconfig.MantorexConfig
 
 func GetMantorexConfig() MantorexConfig { return appconfig.GetMantorexConfig() }
