@@ -12,6 +12,7 @@ func SaveLicense(info *LicenseInfo) error              { return license.SaveLice
 func RemoveLicense() error                             { return license.RemoveLicense() }
 func ValidateOnline(key string) (*LicenseInfo, error)  { return license.ValidateOnline(key) }
 func ActivateKey(key string) (*LicenseInfo, error)     { return license.ActivateKey(key) }
+func StartTrial() (*LicenseInfo, error)                { return license.StartTrial() }
 func CheckLicense() *LicenseInfo                       { return license.CheckLicense() }
 func IsPro() bool                                      { return license.IsPro() }
 func Deactivate() error                                { return license.Deactivate() }

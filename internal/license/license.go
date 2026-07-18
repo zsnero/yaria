@@ -20,6 +20,9 @@ const (
 	// ActivationEndpoint is the URL to activate (bind) a key to a device.
 	ActivationEndpoint = "https://yaria.live/api/activate"
 
+	// TrialEndpoint starts a one-time 30-day Pro trial for this device.
+	TrialEndpoint = "https://yaria.live/api/trial/start"
+
 	// CacheDuration is how long a validated license is trusted offline.
 	CacheDuration = 7 * 24 * time.Hour // 7 days
 )
@@ -53,6 +56,7 @@ type APIResponse struct {
 	Email     string `json:"email,omitempty"`
 	DeviceID  string `json:"device_id,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
+	Key       string `json:"key,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
@@ -267,14 +271,91 @@ func CheckLicense() *LicenseInfo {
 	return cached
 }
 
-// IsPro returns true if the user has a valid pro license for this device.
+// IsPro returns true if the user has a valid pro or trial license for this device.
 func IsPro() bool {
 	// Dev bypass: only enable for this specific device
 	if GenerateDeviceID() == "0b3794b39ee44bff" {
 		return true
 	}
 	info := CheckLicense()
-	return info.Valid && info.Plan == "pro"
+	return info.Valid && (info.Plan == "pro" || info.Plan == "trial")
+}
+
+// StartTrial requests a one-time 30-day Pro trial from the license server,
+// caches it locally, and returns the license info.
+func StartTrial() (*LicenseInfo, error) {
+	deviceID := GenerateDeviceID()
+	fp := GetDeviceFingerprint()
+
+	reqBody := ActivationRequest{
+		DeviceID:   deviceID,
+		DeviceName: DeviceSummary(),
+		OS:         fp.OS,
+		Hostname:   fp.Hostname,
+		Username:   fp.Username,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Post(TrialEndpoint, "application/json", bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to reach license server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("license server returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var apiResp APIResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("invalid response from license server: %w", err)
+	}
+
+	if apiResp.Error != "" {
+		return nil, fmt.Errorf("%s", apiResp.Error)
+	}
+	if !apiResp.Valid {
+		return nil, fmt.Errorf("trial could not be started")
+	}
+
+	key := apiResp.Key
+	if key == "" {
+		// Older servers might not return key; still store plan info
+		key = "TRIAL-" + deviceID
+	}
+
+	info := &LicenseInfo{
+		Key:         key,
+		Valid:       true,
+		Plan:        apiResp.Plan,
+		Email:       apiResp.Email,
+		DeviceID:    deviceID,
+		DeviceName:  DeviceSummary(),
+		ValidatedAt: time.Now(),
+	}
+	if info.Plan == "" {
+		info.Plan = "trial"
+	}
+	if apiResp.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, apiResp.ExpiresAt); err == nil {
+			info.ExpiresAt = t
+		}
+	}
+
+	if err := SaveLicense(info); err != nil {
+		return info, fmt.Errorf("trial started but failed to save: %w", err)
+	}
+	return info, nil
 }
 
 // Deactivate removes the stored license.
