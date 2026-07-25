@@ -362,13 +362,13 @@ func GetUISettings() UISettings {
 	}
 	// When unset, callers may still override by platform; we store the raw default true
 	// and let the frontend apply Linux default if needed via a separate flag.
-	anims := true
+	anims := false // off by default (first install)
 	if v.IsSet("ui.animations") {
 		anims = v.GetBool("ui.animations")
 	}
 	font := v.GetString("ui.font")
 	if font == "" {
-		font = "Inter"
+		font = "Roboto"
 	}
 	size := v.GetString("ui.font_size")
 	if size == "" {
@@ -403,7 +403,7 @@ func UIConfigured() bool {
 func SetUISettings(s UISettings) error {
 	Init()
 	if s.Font == "" {
-		s.Font = "Inter"
+		s.Font = "Roboto"
 	}
 	if s.FontSize == "" {
 		s.FontSize = "14"
