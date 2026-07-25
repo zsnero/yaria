@@ -214,16 +214,39 @@ func MantorexDebug() bool {
 
 // --- API Keys ---
 
-// TMDBApiKey returns the TMDB API key.
-func TMDBApiKey() string {
+// builtinTMDBKey is an optional fallback used when the user has not set their
+// own key. Set only from pro builds via SetBuiltinTMDBKey (never committed).
+var builtinTMDBKey string
+
+// SetBuiltinTMDBKey sets the compile-time / pro-default TMDB API key fallback.
+func SetBuiltinTMDBKey(key string) {
+	builtinTMDBKey = strings.TrimSpace(key)
+}
+
+// UserTMDBApiKey returns only the user-configured key (empty if unset).
+func UserTMDBApiKey() string {
 	Init()
-	return v.GetString("api_keys.tmdb")
+	return strings.TrimSpace(v.GetString("api_keys.tmdb"))
+}
+
+// TMDBApiKey returns the effective TMDB API key: user override, else builtin.
+func TMDBApiKey() string {
+	if k := UserTMDBApiKey(); k != "" {
+		return k
+	}
+	return builtinTMDBKey
+}
+
+// UsingBuiltinTMDB reports whether the effective key is the builtin fallback.
+func UsingBuiltinTMDB() bool {
+	return UserTMDBApiKey() == "" && builtinTMDBKey != ""
 }
 
 // SetTMDBApiKey sets and saves the TMDB API key.
+// Pass empty string to clear the user override and fall back to builtin.
 func SetTMDBApiKey(key string) error {
 	Init()
-	v.Set("api_keys.tmdb", key)
+	v.Set("api_keys.tmdb", strings.TrimSpace(key))
 	return Save()
 }
 

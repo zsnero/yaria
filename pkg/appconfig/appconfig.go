@@ -16,8 +16,11 @@ func MantorexHostPort() int            { return appconfig.MantorexHostPort() }
 func MantorexTheme() string            { return appconfig.MantorexTheme() }
 func SetMantorexTheme(t string) error  { return appconfig.SetMantorexTheme(t) }
 func MantorexDebug() bool              { return appconfig.MantorexDebug() }
-func TMDBApiKey() string               { return appconfig.TMDBApiKey() }
-func SetTMDBApiKey(key string) error   { return appconfig.SetTMDBApiKey(key) }
+func TMDBApiKey() string                 { return appconfig.TMDBApiKey() }
+func UserTMDBApiKey() string             { return appconfig.UserTMDBApiKey() }
+func UsingBuiltinTMDB() bool             { return appconfig.UsingBuiltinTMDB() }
+func SetBuiltinTMDBKey(key string)       { appconfig.SetBuiltinTMDBKey(key) }
+func SetTMDBApiKey(key string) error     { return appconfig.SetTMDBApiKey(key) }
 
 // --- Proxy settings ---
 
