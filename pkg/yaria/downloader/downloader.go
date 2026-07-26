@@ -6,6 +6,7 @@ import (
 )
 
 type Format = downloader.Format
+type VideoInfo = downloader.VideoInfo
 type YTDLPDownloader = downloader.YTDLPDownloader
 type Downloader = downloader.Downloader
 

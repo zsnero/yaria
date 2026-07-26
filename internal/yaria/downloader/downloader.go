@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ type Downloader interface {
 	GetMetadata(args []string) (string, string, error)
 	GetOutputFilename(args []string, tempDir string) (string, error)
 	GetFormats(url string) ([]Format, error)
+	GetVideoInfo(url string) (*VideoInfo, error)
 	GetThumbnail(args []string, tempDir string) (string, error)
 	Download(args []string, tempDir string) (bool, error)
 }
@@ -44,6 +46,15 @@ type Format struct {
 	IsAudio  bool
 	Protocol string
 	FileSize string
+}
+
+// VideoInfo is metadata + formats from a single yt-dlp -J call.
+type VideoInfo struct {
+	Title     string
+	Uploader  string
+	Duration  int
+	Thumbnail string
+	Formats   []Format
 }
 
 // Implements the Downloader interface
@@ -794,8 +805,8 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	// Fast path: no cookies (avoids kooky/Edge DB hangs on Windows)
 	output, err := runYTDLPTimeout(ytDlpCmd, metaArgs, 45*time.Second)
 
-	// Auth/bot issues → try once with cookies
-	if err != nil && needsCookies(string(output), err) {
+	// Auth/bot/Instagram empty-media → try once with browser cookies
+	if err != nil && (needsCookies(string(output), err) || isInstagramURL(url)) {
 		cookieBrowser := d.cfg.CookieBrowser
 		if cookieBrowser == "" {
 			cookieBrowser = DetectBrowser()
@@ -823,14 +834,16 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 			// Helpful hints for common errors
 			switch {
 			case isCookieDBError(errMsg):
-				return "", "", fmt.Errorf("could not read browser cookies (close Chrome/Edge or log into YouTube in the browser, then try again)")
+				return "", "", fmt.Errorf("could not read browser cookies (close Chrome/Edge or log into the site in the browser, then try again)")
 			case strings.Contains(errMsg, "Unsupported URL"):
 				return "", "", fmt.Errorf("unsupported URL")
 			case strings.Contains(errMsg, "Video unavailable"):
 				return "", "", fmt.Errorf("video unavailable (private, deleted, or region-locked)")
+			case strings.Contains(errMsg, "empty media response"):
+				return "", "", fmt.Errorf("Instagram blocked anonymous access. Log into Instagram in Firefox/Chrome, then retry (yaria will use browser cookies)")
 			case strings.Contains(errMsg, "Sign in"), strings.Contains(errMsg, "Age-restricted"),
 				strings.Contains(errMsg, "confirm you're not a bot"):
-				return "", "", fmt.Errorf("sign-in required. Log into YouTube in your browser and try again")
+				return "", "", fmt.Errorf("sign-in required. Log into the site in your browser and try again")
 			case strings.Contains(errMsg, "HTTP Error 429"):
 				return "", "", fmt.Errorf("rate limited, try again later")
 			case strings.Contains(errMsg, "HTTP Error 413"), strings.Contains(errMsg, "Request Entity Too Large"):
@@ -846,11 +859,10 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 				return "", "", fmt.Errorf("requested format unavailable")
 			case strings.Contains(errMsg, "timed out"), strings.Contains(errMsg, "context deadline"):
 				return "", "", fmt.Errorf("metadata fetch timed out. Check your network and try again")
+			case strings.Contains(errMsg, "Traceback (most recent call last)"):
+				return "", "", fmt.Errorf("yt-dlp crashed (update it: yt-dlp -U or pip install -U yt-dlp). Detail: %s", summarizeYTDLPError(errMsg))
 			}
-			if len(errMsg) > 300 {
-				errMsg = errMsg[:300] + "..."
-			}
-			return "", "", fmt.Errorf("%s", errMsg)
+			return "", "", fmt.Errorf("%s", summarizeYTDLPError(errMsg))
 		}
 		return "", "", fmt.Errorf("yt-dlp failed: %v", err)
 	}
@@ -1205,6 +1217,192 @@ func (d *YTDLPDownloader) GetFormats(url string) ([]Format, error) {
 	return sortedFormats, nil
 }
 
+// GetVideoInfo fetches title, uploader, duration, thumbnail, and formats in one yt-dlp -J call.
+func (d *YTDLPDownloader) GetVideoInfo(url string) (*VideoInfo, error) {
+	ytDlpCmd := "yt-dlp"
+	if runtime.GOOS == "windows" {
+		ytDlpCmd = "yt-dlp.exe"
+	}
+
+	isProblematic := isProblematicSite(url)
+	cmdArgs := []string{
+		"-J",
+		"--no-warnings",
+		"--no-playlist",
+		"--socket-timeout", "20",
+		"--user-agent", userAgent,
+		"--legacy-server-connect",
+		"--extractor-retries", "2",
+	}
+	if isProblematic {
+		cmdArgs = append(cmdArgs, getSiteHeaders(url)...)
+	}
+	cmdArgs = append(cmdArgs, url)
+
+	// Fast path: no cookies first (avoids browser DB hangs)
+	output, err := runYTDLPTimeout(ytDlpCmd, cmdArgs, 45*time.Second)
+
+	if err != nil && (needsCookies(string(output), err) || isInstagramURL(url)) {
+		cookieBrowser := d.cfg.CookieBrowser
+		if cookieBrowser == "" {
+			cookieBrowser = DetectBrowser()
+		}
+		cookieArgs := cookies.GetYTDLPCookieArgs(url, cookieBrowser)
+		if len(cookieArgs) > 0 {
+			withCookies := append([]string{}, cmdArgs[:len(cmdArgs)-1]...)
+			withCookies = append(withCookies, cookieArgs...)
+			withCookies = append(withCookies, url)
+			output2, err2 := runYTDLPTimeout(ytDlpCmd, withCookies, 45*time.Second)
+			if err2 == nil {
+				output, err = output2, nil
+			} else if !isCookieDBError(string(output2)) {
+				output, err = output2, err2
+			}
+		}
+	}
+
+	if err != nil {
+		if len(output) > 0 {
+			return nil, fmt.Errorf("%s", summarizeYTDLPError(strings.TrimSpace(string(output))))
+		}
+		return nil, fmt.Errorf("yt-dlp failed: %v", err)
+	}
+
+	var raw struct {
+		Title     string  `json:"title"`
+		Uploader  string  `json:"uploader"`
+		Channel   string  `json:"channel"`
+		Duration  float64 `json:"duration"`
+		Thumbnail string  `json:"thumbnail"`
+		Thumbnails []struct {
+			URL string `json:"url"`
+		} `json:"thumbnails"`
+		Formats []struct {
+			FormatID       string  `json:"format_id"`
+			Height         int     `json:"height"`
+			Ext            string  `json:"ext"`
+			VCodec         string  `json:"vcodec"`
+			ACodec         string  `json:"acodec"`
+			Protocol       string  `json:"protocol"`
+			Filesize       int64   `json:"filesize"`
+			FilesizeApprox int64   `json:"filesize_approx"`
+		} `json:"formats"`
+	}
+	if err := json.Unmarshal(output, &raw); err != nil {
+		return nil, fmt.Errorf("parse yt-dlp json: %v", err)
+	}
+
+	info := &VideoInfo{
+		Title:    raw.Title,
+		Uploader: raw.Uploader,
+		Duration: int(raw.Duration),
+	}
+	if info.Uploader == "" {
+		info.Uploader = raw.Channel
+	}
+	info.Thumbnail = raw.Thumbnail
+	if info.Thumbnail == "" && len(raw.Thumbnails) > 0 {
+		info.Thumbnail = raw.Thumbnails[len(raw.Thumbnails)-1].URL
+	}
+
+	// Prefer best format per height (video) similar to GetFormats
+	uniqueVideo := make(map[int]Format)
+	var audioFmts []Format
+	for _, f := range raw.Formats {
+		vNone := f.VCodec == "none" || f.VCodec == ""
+		aNone := f.ACodec == "none" || f.ACodec == ""
+		isAudio := vNone && !aNone
+		isVideo := !vNone && f.Height > 0
+		if !isAudio && !isVideo {
+			continue
+		}
+		if isVideo && f.Height < 144 {
+			continue
+		}
+
+		ext := strings.ToLower(f.Ext)
+		if ext == "" {
+			continue
+		}
+		proto := f.Protocol
+		if strings.Contains(proto, "m3u8") {
+			proto = "m3u8"
+		} else if strings.HasPrefix(proto, "http") {
+			proto = "http"
+		}
+
+		size := f.Filesize
+		if size <= 0 {
+			size = f.FilesizeApprox
+		}
+		entry := Format{
+			ID:       f.FormatID,
+			Height:   f.Height,
+			Ext:      ext,
+			IsAudio:  isAudio,
+			Protocol: proto,
+			FileSize: formatBytes(size),
+		}
+
+		if isAudio {
+			audioFmts = append(audioFmts, entry)
+			continue
+		}
+
+		existing, exists := uniqueVideo[f.Height]
+		if !exists {
+			uniqueVideo[f.Height] = entry
+			continue
+		}
+		shouldReplace := false
+		if ext == "mp4" && existing.Ext != "mp4" {
+			shouldReplace = true
+		} else if ext == existing.Ext {
+			if (proto == "http" || proto == "") && existing.Protocol != "http" && existing.Protocol != "" {
+				shouldReplace = true
+			}
+		}
+		if shouldReplace {
+			uniqueVideo[f.Height] = entry
+		}
+	}
+
+	sorted := make([]Format, 0, len(uniqueVideo))
+	for _, f := range uniqueVideo {
+		sorted = append(sorted, f)
+	}
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[i].Height < sorted[j].Height {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	info.Formats = append(sorted, audioFmts...)
+	return info, nil
+}
+
+func formatBytes(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	const (
+		kb = 1024
+		mb = 1024 * kb
+		gb = 1024 * mb
+	)
+	switch {
+	case n >= gb:
+		return fmt.Sprintf("%.1fGiB", float64(n)/float64(gb))
+	case n >= mb:
+		return fmt.Sprintf("%.1fMiB", float64(n)/float64(mb))
+	case n >= kb:
+		return fmt.Sprintf("%.1fKiB", float64(n)/float64(kb))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
+}
+
 // Executes the download process with retries and fallback
 func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) {
 	ytDlpCmd := "yt-dlp"
@@ -1212,37 +1410,13 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		ytDlpCmd = "yt-dlp.exe"
 	}
 	for attempt := 1; attempt <= d.cfg.MaxRetries; attempt++ {
-		// Check if this is a problematic site that needs special handling
-		problematicSites := []string{
-			"pornhub.com", "xvideos.com", "xhamster.com", "xhamster.desi", "xhamster.one",
-			"youporn.com", "redtube.com",
-			"spankbang.com", "eporner.com", "tube8.com", "tnaflix.com", "keezmovies.com",
-			"twitter.com", "x.com", "instagram.com", "facebook.com", "tiktok.com",
-			"vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com",
-			"reddit.com", "imgur.com", "giphy.com",
-		}
-
-		isProblematic := false
-		for _, arg := range args {
-			for _, site := range problematicSites {
-				if strings.Contains(arg, site) {
-					isProblematic = true
-					break
-				}
-			}
-			if isProblematic {
-				break
-			}
-		}
-
-		// Sites that truly need rate-limit protection (adult sites)
 		argURL := strings.Join(args, " ")
-		needsSleep := strings.Contains(argURL, "pornhub.com") ||
-			strings.Contains(argURL, "xvideos.com") || strings.Contains(argURL, "xhamster.") ||
-			strings.Contains(argURL, "spankbang.com") || strings.Contains(argURL, "eporner.com")
+		// Slow mode: adult hosts only. Social/normal sites use full speed.
+		adultSlow := IsAdultSlowSite(argURL)
+		wantHeaders := NeedsSiteHeaders(argURL)
 
 		var cmdArgs []string
-		if isProblematic {
+		if adultSlow {
 			cmdArgs = []string{
 				"--no-overwrites",
 				"--geo-bypass",
@@ -1257,13 +1431,11 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				"--retries", "10",
 				"--retry-sleep", "3",
 				"--socket-timeout", "60",
-			}
-			// Only add sleep for sites that actually rate-limit
-			if needsSleep {
-				cmdArgs = append(cmdArgs, "--sleep-interval", "1", "--max-sleep-interval", "2")
+				"--sleep-interval", "1",
+				"--max-sleep-interval", "2",
 			}
 		} else {
-			// Maximum speed settings for normal sites
+			// Maximum speed settings for normal + social sites
 			cmdArgs = []string{
 				"--no-overwrites",
 				"--geo-bypass",
@@ -1291,67 +1463,13 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		// Attach browser cookies only if kooky can export quickly.
 		// Avoids Windows hangs from --cookies-from-browser / locked Edge DB.
 		// Public YouTube works without cookies; auth failures retry later without them.
-		dlCookieArgs := cookies.GetYTDLPCookieArgs(strings.Join(args, " "), d.cfg.CookieBrowser)
+		dlCookieArgs := cookies.GetYTDLPCookieArgs(argURL, d.cfg.CookieBrowser)
 		cmdArgs = append(cmdArgs, dlCookieArgs...)
 
-		// Add site-specific headers and settings
-		if isProblematic {
-			// Common headers for all problematic sites
+		// Headers only when needed (adult + a few picky hosts) — not full slow mode
+		if wantHeaders {
 			cmdArgs = append(cmdArgs, "--add-header", "Accept-Language:en-US,en;q=0.9")
-			cmdArgs = append(cmdArgs, "--add-header", "Accept:*/*")
-			cmdArgs = append(cmdArgs, "--add-header", "Connection:keep-alive")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Dest:empty")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Mode:cors")
-
-			// Site-specific headers
-			for _, arg := range args {
-				if strings.Contains(arg, "pornhub.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.pornhub.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.pornhub.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "xvideos.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.xvideos.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.xvideos.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "xhamster.") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://xhamster.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://xhamster.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "twitter.com") || strings.Contains(arg, "x.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://twitter.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://twitter.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "instagram.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.instagram.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.instagram.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "tiktok.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.tiktok.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.tiktok.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "vimeo.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://vimeo.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://vimeo.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "reddit.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.reddit.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.reddit.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				} else if strings.Contains(arg, "facebook.com") {
-					cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.facebook.com/")
-					cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.facebook.com")
-					cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-					break
-				}
-			}
+			cmdArgs = append(cmdArgs, getSiteHeaders(argURL)...)
 		}
 		if d.cfg.IsAudioOnly {
 			cmdArgs = append(cmdArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
@@ -1367,9 +1485,8 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				}
 			}
 			if !userProvidedFormat {
-				// Use best quality format
-				if isProblematic {
-					// Prefer HLS (m3u8) formats -- HTTPS direct URLs may be blocked by DPI/TLS inspection
+				// HLS-first only for adult CDNs; social uses normal best
+				if PreferHLSFormat(argURL) {
 					cmdArgs = append(cmdArgs, "--format", "bestvideo[protocol=m3u8]+bestaudio[protocol=m3u8]/best[protocol=m3u8]/best[height<=1080]/best")
 				} else {
 					cmdArgs = append(cmdArgs, "--format", "bestvideo+bestaudio/best")
@@ -1527,7 +1644,51 @@ func needsCookies(output string, err error) bool {
 		strings.Contains(s, "age restricted") ||
 		strings.Contains(s, "login required") ||
 		strings.Contains(s, "private video") ||
-		strings.Contains(s, "confirm your age")
+		strings.Contains(s, "confirm your age") ||
+		strings.Contains(s, "empty media response") ||
+		strings.Contains(s, "logged-in") ||
+		strings.Contains(s, "use --cookies") ||
+		strings.Contains(s, "cookies-from-browser")
+}
+
+func isInstagramURL(url string) bool {
+	return urlMatchesAnyHost(url, []string{"instagram.com", "ddinstagram.com"})
+}
+
+// summarizeYTDLPError picks the useful ERROR line from noisy yt-dlp/python output.
+func summarizeYTDLPError(errMsg string) string {
+	errMsg = strings.TrimSpace(errMsg)
+	if errMsg == "" {
+		return "unknown yt-dlp error"
+	}
+	// Prefer last ERROR: line
+	lines := strings.Split(errMsg, "\n")
+	var lastErr string
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "ERROR:") || strings.Contains(t, "ERROR: ") {
+			lastErr = t
+		}
+	}
+	if lastErr != "" {
+		lastErr = strings.TrimPrefix(lastErr, "ERROR:")
+		lastErr = strings.TrimSpace(lastErr)
+		if len(lastErr) > 280 {
+			lastErr = lastErr[:280] + "..."
+		}
+		return lastErr
+	}
+	// Collapse python tracebacks
+	if strings.Contains(errMsg, "Traceback (most recent call last)") {
+		if len(errMsg) > 200 {
+			return "yt-dlp internal error (update yt-dlp). " + errMsg[len(errMsg)-120:]
+		}
+		return "yt-dlp internal error — try: yt-dlp -U"
+	}
+	if len(errMsg) > 300 {
+		return errMsg[:300] + "..."
+	}
+	return errMsg
 }
 
 func isCookieDBError(s string) bool {
@@ -1845,25 +2006,114 @@ func findChromiumProfile(configDir string) string {
 	return ""
 }
 
-// allProblematicSites returns the list of sites needing special handling.
-var allProblematicSites = []string{
-	// Adult sites
-	"pornhub.com", "xvideos.com", "xhamster.", "youporn.com", "redtube.com",
-	"spankbang.com", "eporner.com", "tube8.com", "tnaflix.com", "keezmovies.com",
-	// Social media
-	"twitter.com", "x.com", "instagram.com", "facebook.com", "tiktok.com",
-	"reddit.com", "imgur.com", "giphy.com",
-	// Video platforms
-	"vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com",
-	"bilibili.com", "b23.tv", "nicovideo.jp",
-	"rumble.com", "odysee.com", "bitchute.com",
-	"rutube.ru", "ok.ru", "vk.com",
+// adultSlowHosts: true "problematic" sites — lower concurrency, more retries, optional sleep.
+// Do NOT put normal social/video hosts here (that only slows downloads).
+var adultSlowHosts = []string{
+	"pornhub.com", "xvideos.com", "xhamster.com", "xhamster.desi", "xhamster.one",
+	"youporn.com", "redtube.com", "spankbang.com", "eporner.com",
+	"tube8.com", "tnaflix.com", "keezmovies.com",
+}
+
+// headerOnlyHosts: full-speed downloads, but add Referer/Origin when helpful.
+// Kept small — most sites work with yt-dlp defaults.
+var headerOnlyHosts = []string{
+	"twitter.com", "x.com", "instagram.com", "ddinstagram.com",
+	"facebook.com", "fb.watch", "tiktok.com",
+	"vimeo.com", "bilibili.com", "b23.tv", "nicovideo.jp",
+	"vk.com", "ok.ru",
+}
+
+// firstURLHost returns the hostname of the first http(s) URL in s (lowercased, no www.).
+func firstURLHost(s string) string {
+	lower := strings.ToLower(s)
+	idx := strings.Index(lower, "https://")
+	if idx < 0 {
+		idx = strings.Index(lower, "http://")
+	}
+	if idx < 0 {
+		return ""
+	}
+	rest := lower[idx:]
+	// strip scheme
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:]
+	}
+	// host ends at / ? # or space
+	end := len(rest)
+	for i, c := range rest {
+		if c == '/' || c == '?' || c == '#' || c == ' ' || c == '\t' || c == '"' || c == '\'' {
+			end = i
+			break
+		}
+	}
+	host := rest[:end]
+	// strip userinfo and port
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if colon := strings.Index(host, ":"); colon >= 0 {
+		host = host[:colon]
+	}
+	return strings.TrimPrefix(host, "www.")
+}
+
+// hostMatchesDomain reports whether host is domain or a subdomain of domain.
+// Avoids false positives like substring "x.com" inside unrelated hosts.
+func hostMatchesDomain(host, domain string) bool {
+	host = strings.TrimPrefix(strings.ToLower(host), "www.")
+	domain = strings.TrimPrefix(strings.ToLower(domain), "www.")
+	if host == "" || domain == "" {
+		return false
+	}
+	return host == domain || strings.HasSuffix(host, "."+domain)
+}
+
+func urlMatchesAnyHost(raw string, domains []string) bool {
+	host := firstURLHost(raw)
+	if host == "" {
+		return false
+	}
+	for _, d := range domains {
+		if hostMatchesDomain(host, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsAdultSlowSite is true for adult hosts that need reduced concurrency / retries.
+func IsAdultSlowSite(url string) bool {
+	return urlMatchesAnyHost(url, adultSlowHosts)
+}
+
+// NeedsSiteHeaders is true when extra Referer/Origin headers help (adult + a few picky hosts).
+func NeedsSiteHeaders(url string) bool {
+	return IsAdultSlowSite(url) || urlMatchesAnyHost(url, headerOnlyHosts)
+}
+
+// PreferHLSFormat is true only for adult sites where progressive HTTPS is often blocked.
+func PreferHLSFormat(url string) bool {
+	return IsAdultSlowSite(url)
+}
+
+// isProblematicSite kept as alias for metadata path (headers only, not slow mode).
+func isProblematicSite(url string) bool {
+	return NeedsSiteHeaders(url)
+}
+
+// GetSiteHeaders returns yt-dlp args for site-specific Referer/Origin headers.
+func GetSiteHeaders(url string) []string {
+	return getSiteHeaders(url)
 }
 
 // getSiteHeaders returns yt-dlp args for site-specific headers.
-// Extracts the origin from the URL for Referer/Origin headers.
 func getSiteHeaders(url string) []string {
+	if !NeedsSiteHeaders(url) {
+		return nil
+	}
+
 	var args []string
+	host := firstURLHost(url)
 
 	// Extract origin from URL for generic Referer
 	origin := ""
@@ -1876,67 +2126,55 @@ func getSiteHeaders(url string) []string {
 		}
 	}
 
-	// Site-specific overrides
 	switch {
-	case strings.Contains(url, "pornhub.com"):
+	case hostMatchesDomain(host, "pornhub.com"):
 		args = append(args, "--add-header", "Referer:https://www.pornhub.com/")
 		args = append(args, "--add-header", "Origin:https://www.pornhub.com")
-	case strings.Contains(url, "xvideos.com"):
+	case hostMatchesDomain(host, "xvideos.com"):
 		args = append(args, "--add-header", "Referer:https://www.xvideos.com/")
 		args = append(args, "--add-header", "Origin:https://www.xvideos.com")
-	case strings.Contains(url, "xhamster."):
-		args = append(args, "--add-header", "Referer:"+origin+"/")
-		args = append(args, "--add-header", "Origin:"+origin)
-	case strings.Contains(url, "twitter.com") || strings.Contains(url, "x.com"):
-		refOrigin := "https://x.com"
-		if strings.Contains(url, "twitter.com") {
-			refOrigin = "https://twitter.com"
+	case hostMatchesDomain(host, "xhamster.com"), hostMatchesDomain(host, "xhamster.desi"), hostMatchesDomain(host, "xhamster.one"):
+		ref := origin
+		if ref == "" {
+			ref = "https://xhamster.com"
 		}
-		args = append(args, "--add-header", "Referer:"+refOrigin+"/")
-		args = append(args, "--add-header", "Origin:"+refOrigin)
-	case strings.Contains(url, "instagram.com"):
+		args = append(args, "--add-header", "Referer:"+ref+"/")
+		args = append(args, "--add-header", "Origin:"+ref)
+	case hostMatchesDomain(host, "twitter.com"):
+		args = append(args, "--add-header", "Referer:https://twitter.com/")
+		args = append(args, "--add-header", "Origin:https://twitter.com")
+	case hostMatchesDomain(host, "x.com"):
+		args = append(args, "--add-header", "Referer:https://x.com/")
+		args = append(args, "--add-header", "Origin:https://x.com")
+	case hostMatchesDomain(host, "instagram.com"), hostMatchesDomain(host, "ddinstagram.com"):
 		args = append(args, "--add-header", "Referer:https://www.instagram.com/")
 		args = append(args, "--add-header", "Origin:https://www.instagram.com")
-	case strings.Contains(url, "facebook.com"):
+	case hostMatchesDomain(host, "facebook.com"), hostMatchesDomain(host, "fb.watch"):
 		args = append(args, "--add-header", "Referer:https://www.facebook.com/")
 		args = append(args, "--add-header", "Origin:https://www.facebook.com")
-	case strings.Contains(url, "tiktok.com"):
+	case hostMatchesDomain(host, "tiktok.com"):
 		args = append(args, "--add-header", "Referer:https://www.tiktok.com/")
 		args = append(args, "--add-header", "Origin:https://www.tiktok.com")
-	case strings.Contains(url, "bilibili.com") || strings.Contains(url, "b23.tv"):
+	case hostMatchesDomain(host, "bilibili.com"), hostMatchesDomain(host, "b23.tv"):
 		args = append(args, "--add-header", "Referer:https://www.bilibili.com/")
 		args = append(args, "--add-header", "Origin:https://www.bilibili.com")
-	case strings.Contains(url, "bitchute.com"):
-		args = append(args, "--add-header", "Referer:https://www.bitchute.com/")
-		args = append(args, "--add-header", "Origin:https://www.bitchute.com")
-	case strings.Contains(url, "nicovideo.jp"):
+	case hostMatchesDomain(host, "nicovideo.jp"):
 		args = append(args, "--add-header", "Referer:https://www.nicovideo.jp/")
-	case strings.Contains(url, "vimeo.com"):
+	case hostMatchesDomain(host, "vimeo.com"):
 		args = append(args, "--add-header", "Referer:https://vimeo.com/")
 		args = append(args, "--add-header", "Origin:https://vimeo.com")
-	case strings.Contains(url, "dailymotion.com"):
-		args = append(args, "--add-header", "Referer:https://www.dailymotion.com/")
-		args = append(args, "--add-header", "Origin:https://www.dailymotion.com")
-	case strings.Contains(url, "reddit.com"):
-		args = append(args, "--add-header", "Referer:https://www.reddit.com/")
-		args = append(args, "--add-header", "Origin:https://www.reddit.com")
+	case hostMatchesDomain(host, "vk.com"):
+		args = append(args, "--add-header", "Referer:https://vk.com/")
+		args = append(args, "--add-header", "Origin:https://vk.com")
+	case hostMatchesDomain(host, "ok.ru"):
+		args = append(args, "--add-header", "Referer:https://ok.ru/")
+		args = append(args, "--add-header", "Origin:https://ok.ru")
 	default:
-		// Generic: use the extracted origin
-		if origin != "" {
+		if IsAdultSlowSite(url) && origin != "" {
 			args = append(args, "--add-header", "Referer:"+origin+"/")
 			args = append(args, "--add-header", "Origin:"+origin)
 		}
 	}
 
 	return args
-}
-
-// isProblematicSite checks if a URL matches a site that needs special handling.
-func isProblematicSite(url string) bool {
-	for _, site := range allProblematicSites {
-		if strings.Contains(url, site) {
-			return true
-		}
-	}
-	return false
 }
