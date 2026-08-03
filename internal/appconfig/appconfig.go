@@ -368,12 +368,13 @@ func SetMediaServerPin(pin string) error {
 
 // UISettings holds desktop UI customization options.
 type UISettings struct {
-	Font          string `json:"font"`
-	FontSize      string `json:"font_size"`
-	Scale         string `json:"scale"`
-	Animations    bool   `json:"animations"`
-	Blur          bool   `json:"blur"`
-	PlayerBackend string `json:"player_backend"` // "webview" (default) | "libmpv"
+	Font                   string `json:"font"`
+	FontSize               string `json:"font_size"`
+	Scale                  string `json:"scale"`
+	Animations             bool   `json:"animations"`
+	Blur                   bool   `json:"blur"`
+	PlayerBackend          string `json:"player_backend"` // "webview" (default) | "libmpv"
+	MantorexLegalAccepted  bool   `json:"mantorex_legal_accepted"`
 }
 
 // GetUISettings returns desktop UI preferences.
@@ -407,12 +408,13 @@ func GetUISettings() UISettings {
 		backend = "webview"
 	}
 	return UISettings{
-		Font:          font,
-		FontSize:      size,
-		Scale:         scale,
-		Animations:    anims,
-		Blur:          blur,
-		PlayerBackend: backend,
+		Font:                  font,
+		FontSize:              size,
+		Scale:                 scale,
+		Animations:            anims,
+		Blur:                  blur,
+		PlayerBackend:         backend,
+		MantorexLegalAccepted: v.GetBool("ui.mantorex_legal_accepted"),
 	}
 }
 
@@ -449,6 +451,7 @@ func SetUISettings(s UISettings) error {
 	v.Set("ui.animations", s.Animations)
 	v.Set("ui.blur", s.Blur)
 	v.Set("ui.player_backend", s.PlayerBackend)
+	v.Set("ui.mantorex_legal_accepted", s.MantorexLegalAccepted)
 	return Save()
 }
 
