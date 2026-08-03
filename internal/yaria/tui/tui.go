@@ -1181,23 +1181,11 @@ func (m *Model) runDownload() {
 		"--fragment-retries", "3",
 	}
 
-	problematicSites := []string{
-		"pornhub.com", "xvideos.com", "xhamster.com", "youporn.com", "redtube.com",
-		"spankbang.com", "eporner.com", "tube8.com", "tnaflix.com", "keezmovies.com",
-		"twitter.com", "x.com", "instagram.com", "facebook.com", "tiktok.com",
-		"vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com",
-		"reddit.com", "imgur.com", "giphy.com",
-	}
+	// Slow mode only for adult hosts; social/normal keep full speed
+	adultSlow := downloader.IsAdultSlowSite(m.url)
+	wantHeaders := downloader.NeedsSiteHeaders(m.url)
 
-	isProblematic := false
-	for _, site := range problematicSites {
-		if strings.Contains(m.url, site) {
-			isProblematic = true
-			break
-		}
-	}
-
-	if isProblematic {
+	if adultSlow {
 		cmdArgs = []string{
 			"--no-overwrites",
 			"--geo-bypass",
@@ -1212,6 +1200,8 @@ func (m *Model) runDownload() {
 			"--fragment-retries", "10",
 			"--retries", "10",
 			"--retry-sleep", "5",
+			"--sleep-interval", "1",
+			"--max-sleep-interval", "3",
 		}
 	}
 
@@ -1233,57 +1223,17 @@ func (m *Model) runDownload() {
 
 	cmdArgs = append(cmdArgs, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-	if isProblematic {
+	if wantHeaders {
 		cmdArgs = append(cmdArgs, "--add-header", "Accept-Language:en-US,en;q=0.9")
-		cmdArgs = append(cmdArgs, "--add-header", "Accept:*/*")
-		cmdArgs = append(cmdArgs, "--add-header", "Connection:keep-alive")
-		cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Dest:empty")
-		cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Mode:cors")
-		cmdArgs = append(cmdArgs, "--sleep-interval", "1")
-		cmdArgs = append(cmdArgs, "--max-sleep-interval", "3")
-
-		if strings.Contains(m.url, "pornhub.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.pornhub.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.pornhub.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-			cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=1")
-			cmdArgs = append(cmdArgs, "--add-header", "Cookie:accessAgeDisclaimerPH=1")
-		} else if strings.Contains(m.url, "xvideos.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.xvideos.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.xvideos.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-		} else if strings.Contains(m.url, "xhamster.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://xhamster.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://xhamster.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-			cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=true")
-		} else if strings.Contains(m.url, "twitter.com") || strings.Contains(m.url, "x.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://twitter.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://twitter.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-			cmdArgs = append(cmdArgs, "--add-header", "Authorization:Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4qs")
-		} else if strings.Contains(m.url, "instagram.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.instagram.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.instagram.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-		} else if strings.Contains(m.url, "tiktok.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.tiktok.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.tiktok.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-		} else if strings.Contains(m.url, "vimeo.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://vimeo.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://vimeo.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-		} else if strings.Contains(m.url, "reddit.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.reddit.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.reddit.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-		} else if strings.Contains(m.url, "facebook.com") {
-			cmdArgs = append(cmdArgs, "--add-header", "Referer:https://www.facebook.com/")
-			cmdArgs = append(cmdArgs, "--add-header", "Origin:https://www.facebook.com")
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:same-origin")
-		} else {
-			cmdArgs = append(cmdArgs, "--add-header", "Sec-Fetch-Site:cross-origin")
+		cmdArgs = append(cmdArgs, downloader.GetSiteHeaders(m.url)...)
+		// Adult age-gate cookies (pornhub/xhamster)
+		if adultSlow {
+			if strings.Contains(strings.ToLower(m.url), "pornhub.com") {
+				cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=1")
+				cmdArgs = append(cmdArgs, "--add-header", "Cookie:accessAgeDisclaimerPH=1")
+			} else if strings.Contains(strings.ToLower(m.url), "xhamster.") {
+				cmdArgs = append(cmdArgs, "--add-header", "Cookie:age_verified=true")
+			}
 		}
 	}
 

@@ -266,22 +266,8 @@ func (m *Manager) runDownload(md *managedDownload) {
 		"--fragment-retries", "3",
 	}
 
-	// Problematic sites get reduced concurrency
-	problematicSites := []string{
-		"pornhub.com", "xvideos.com", "xhamster.com", "youporn.com", "redtube.com",
-		"spankbang.com", "eporner.com", "tube8.com", "tnaflix.com", "keezmovies.com",
-		"twitter.com", "x.com", "instagram.com", "facebook.com", "tiktok.com",
-		"vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com",
-		"reddit.com", "imgur.com", "giphy.com",
-	}
-	isProblematic := false
-	for _, site := range problematicSites {
-		if strings.Contains(entry.URL, site) {
-			isProblematic = true
-			break
-		}
-	}
-	if isProblematic {
+	// Slow mode only for adult hosts; social/normal keep full speed
+	if downloader.IsAdultSlowSite(entry.URL) {
 		cmdArgs = []string{
 			"--no-overwrites",
 			"--geo-bypass",
@@ -296,6 +282,8 @@ func (m *Manager) runDownload(md *managedDownload) {
 			"--fragment-retries", "10",
 			"--retries", "10",
 			"--retry-sleep", "5",
+			"--sleep-interval", "1",
+			"--max-sleep-interval", "3",
 		}
 	}
 
@@ -335,6 +323,11 @@ func (m *Manager) runDownload(md *managedDownload) {
 	}
 	cookieArgs := cookies.GetYTDLPCookieArgs(entry.URL, cookieBrowser)
 	cmdArgs = append(cmdArgs, cookieArgs...)
+
+	if downloader.NeedsSiteHeaders(entry.URL) {
+		cmdArgs = append(cmdArgs, "--add-header", "Accept-Language:en-US,en;q=0.9")
+		cmdArgs = append(cmdArgs, downloader.GetSiteHeaders(entry.URL)...)
+	}
 
 	cmdArgs = append(cmdArgs, entry.URL)
 

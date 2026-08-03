@@ -368,11 +368,12 @@ func SetMediaServerPin(pin string) error {
 
 // UISettings holds desktop UI customization options.
 type UISettings struct {
-	Font       string `json:"font"`
-	FontSize   string `json:"font_size"`
-	Scale      string `json:"scale"`
-	Animations bool   `json:"animations"`
-	Blur       bool   `json:"blur"`
+	Font          string `json:"font"`
+	FontSize      string `json:"font_size"`
+	Scale         string `json:"scale"`
+	Animations    bool   `json:"animations"`
+	Blur          bool   `json:"blur"`
+	PlayerBackend string `json:"player_backend"` // "webview" (default) | "libmpv"
 }
 
 // GetUISettings returns desktop UI preferences.
@@ -401,12 +402,17 @@ func GetUISettings() UISettings {
 	if scale == "" {
 		scale = "100"
 	}
+	backend := v.GetString("ui.player_backend")
+	if backend != "libmpv" {
+		backend = "webview"
+	}
 	return UISettings{
-		Font:       font,
-		FontSize:   size,
-		Scale:      scale,
-		Animations: anims,
-		Blur:       blur,
+		Font:          font,
+		FontSize:      size,
+		Scale:         scale,
+		Animations:    anims,
+		Blur:          blur,
+		PlayerBackend: backend,
 	}
 }
 
@@ -434,11 +440,15 @@ func SetUISettings(s UISettings) error {
 	if s.Scale == "" {
 		s.Scale = "100"
 	}
+	if s.PlayerBackend != "libmpv" {
+		s.PlayerBackend = "webview"
+	}
 	v.Set("ui.font", s.Font)
 	v.Set("ui.font_size", s.FontSize)
 	v.Set("ui.scale", s.Scale)
 	v.Set("ui.animations", s.Animations)
 	v.Set("ui.blur", s.Blur)
+	v.Set("ui.player_backend", s.PlayerBackend)
 	return Save()
 }
 
