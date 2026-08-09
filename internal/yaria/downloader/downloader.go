@@ -64,7 +64,24 @@ type YTDLPDownloader struct {
 	depsDir    string
 }
 
+// safeWriter never returns nil — fmt.Fprintf panics on a nil io.Writer.
+func safeWriter(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+	return w
+}
+
 func New(cfg *config.Config) (*YTDLPDownloader, error) {
+	if cfg == nil {
+		return nil, errors.New("config is nil")
+	}
+	// Pin non-nil writers for the whole setup path. Callers (and concurrent
+	// InitDeps races) must never leave Stdout/Stderr nil mid-flight.
+	cfg.Stdout = safeWriter(cfg.Stdout)
+	cfg.Stderr = safeWriter(cfg.Stderr)
+	logw := cfg.Stderr
+
 	// Create dependencies folder in a persistent location
 	var depsDir string
 
@@ -183,115 +200,11 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 		fmt.Fprintf(cfg.Stderr, "Downloaded yt-dlp to %s\n", ytDlpPath)
 	}
 
-	// Check and download aria2
-	aria2Binary := "aria2c"
-	if runtime.GOOS == "windows" {
-		aria2Binary = "aria2c.exe"
+	// aria2 is required — auto-download a portable build on first launch
+	if _, err := EnsureAria2(depsDir, logw); err != nil {
+		return nil, fmt.Errorf("aria2 setup failed: %w", err)
 	}
-	aria2Path := filepath.Join(depsDir, aria2Binary)
-	shouldDownloadAria2 := false
-	if _, err := exec.LookPath(aria2Binary); err != nil {
-		if _, err := os.Stat(aria2Path); err != nil {
-			shouldDownloadAria2 = true
-		} else if shouldCheckVersions {
-			// Check aria2 version
-			cmd := exec.Command(aria2Path, "--version")
-			procexec.HideConsole(cmd)
-			localVersion, err := cmd.Output()
-			if err != nil {
-				fmt.Fprintf(cfg.Stderr, "Warning: Failed to check aria2 version: %v\n", err)
-				shouldDownloadAria2 = true
-			} else {
-				release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
-				if err != nil {
-					fmt.Fprintf(cfg.Stderr, "Warning: Failed to fetch aria2 release: %v\n", err)
-					cfg.UseAria2c = false
-				} else {
-					latestVersion := strings.TrimPrefix(release.GetTagName(), "release-")
-					localVersionStr := strings.TrimSpace(string(localVersion))
-					if strings.Contains(localVersionStr, "aria2 ") {
-						localVersionStr = strings.Split(localVersionStr, " ")[1]
-					}
-					if localVersionStr != latestVersion {
-						fmt.Fprintf(cfg.Stderr, "Local aria2 version %s is outdated, latest is %s\n", localVersionStr, latestVersion)
-						shouldDownloadAria2 = true
-					} else {
-						fmt.Fprintf(cfg.Stderr, "Found aria2 in dependencies at %s (version %s)\n", aria2Path, localVersionStr)
-						cfg.UseAria2c = true
-					}
-				}
-			}
-		} else {
-			fmt.Fprintf(cfg.Stderr, "Found aria2 in dependencies at %s\n", aria2Path)
-			cfg.UseAria2c = true
-		}
-	} else {
-		cfg.UseAria2c = true
-	}
-
-	if shouldDownloadAria2 {
-		fmt.Fprintf(cfg.Stderr, "Downloading aria2 from GitHub...\n")
-		if client == nil {
-			client = github.NewClient(nil)
-		}
-		release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
-		if err != nil {
-			fmt.Fprintf(cfg.Stderr, "Warning: Failed to fetch aria2 release: %v\n", err)
-			cfg.UseAria2c = false
-		} else {
-			assetPattern := fmt.Sprintf("aria2-[0-9.]+-%s-%s", runtime.GOOS, runtime.GOARCH)
-			var downloadURL string
-			for _, asset := range release.Assets {
-				if strings.Contains(asset.GetName(), assetPattern) && !strings.Contains(asset.GetName(), ".tar.") && !strings.Contains(asset.GetName(), ".zip") {
-					downloadURL = asset.GetBrowserDownloadURL()
-					break
-				}
-			}
-			if downloadURL == "" {
-				fmt.Fprintf(cfg.Stderr, "Warning: No suitable aria2 binary found\n")
-				cfg.UseAria2c = false
-			} else {
-				resp, err := http.Get(downloadURL)
-				if err != nil {
-					fmt.Fprintf(cfg.Stderr, "Warning: Failed to download aria2: %v\n", err)
-					cfg.UseAria2c = false
-				} else {
-					defer resp.Body.Close()
-					if resp.StatusCode != http.StatusOK {
-						fmt.Fprintf(cfg.Stderr, "Warning: Failed to download aria2: HTTP status %s\n", resp.Status)
-						cfg.UseAria2c = false
-					} else {
-						if err := os.Remove(aria2Path); err != nil && !os.IsNotExist(err) {
-							fmt.Fprintf(cfg.Stderr, "Warning: Failed to remove outdated aria2: %v\n", err)
-						}
-						out, err := os.Create(aria2Path)
-						if err != nil {
-							fmt.Fprintf(cfg.Stderr, "Warning: Failed to create aria2 binary: %v\n", err)
-							cfg.UseAria2c = false
-						} else {
-							_, err = io.Copy(out, resp.Body)
-							out.Close()
-							if err != nil {
-								fmt.Fprintf(cfg.Stderr, "Warning: Failed to save aria2: %v\n", err)
-								cfg.UseAria2c = false
-							} else if runtime.GOOS != "windows" {
-								if err := os.Chmod(aria2Path, 0o755); err != nil {
-									fmt.Fprintf(cfg.Stderr, "Warning: Failed to set permissions for aria2: %v\n", err)
-									cfg.UseAria2c = false
-								} else {
-									fmt.Fprintf(cfg.Stderr, "Downloaded aria2 to %s\n", aria2Path)
-									cfg.UseAria2c = true
-								}
-							} else {
-								fmt.Fprintf(cfg.Stderr, "Downloaded aria2 to %s\n", aria2Path)
-								cfg.UseAria2c = true
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+	cfg.UseAria2c = true
 
 	// Check and download deno for JavaScript challenge solving
 	denoBinary := "deno"
@@ -476,10 +389,390 @@ func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	if _, err := exec.LookPath(ytDlpBinary); err != nil {
 		return nil, errors.New("yt-dlp not installed")
 	}
-	if _, err := exec.LookPath(aria2Binary); err != nil {
-		cfg.UseAria2c = false
+	aria2Binary := "aria2c"
+	if runtime.GOOS == "windows" {
+		aria2Binary = "aria2c.exe"
 	}
+	if _, err := exec.LookPath(aria2Binary); err != nil {
+		return nil, errors.New("aria2c not installed")
+	}
+	cfg.UseAria2c = true
 	return &YTDLPDownloader{cfg: cfg, ffmpegPath: ffmpegDir, depsDir: depsDir}, nil
+}
+
+// EnsureAria2 finds or downloads a portable aria2c into depsDir.
+// aria2 is required for multi-connection downloads — this must not silently skip.
+func EnsureAria2(depsDir string, logw io.Writer) (string, error) {
+	logw = safeWriter(logw)
+	bin := "aria2c"
+	if runtime.GOOS == "windows" {
+		bin = "aria2c.exe"
+	}
+	dest := filepath.Join(depsDir, bin)
+
+	// Prefer a working binary already on PATH (system package)
+	if p, err := exec.LookPath(bin); err == nil {
+		fmt.Fprintf(logw, "Found aria2 on PATH at %s\n", p)
+		return p, nil
+	}
+	// Prefer previously downloaded copy
+	if st, err := os.Stat(dest); err == nil && !st.IsDir() {
+		cmd := exec.Command(dest, "--version")
+		procexec.HideConsole(cmd)
+		if out, err := cmd.Output(); err == nil && len(out) > 0 {
+			fmt.Fprintf(logw, "Found aria2 in dependencies at %s\n", dest)
+			return dest, nil
+		}
+		// Corrupt/stale binary — re-download
+		_ = os.Remove(dest)
+	}
+
+	fmt.Fprintf(logw, "Downloading aria2 (required)...\n")
+	if err := downloadAria2Binary(depsDir, dest, logw); err != nil {
+		return "", err
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(dest, 0o755)
+	}
+	// Verify it runs
+	cmd := exec.Command(dest, "--version")
+	procexec.HideConsole(cmd)
+	if out, err := cmd.Output(); err != nil {
+		return "", fmt.Errorf("aria2 downloaded but failed to run: %w", err)
+	} else {
+		line := strings.TrimSpace(string(out))
+		if i := strings.Index(line, "\n"); i > 0 {
+			line = line[:i]
+		}
+		fmt.Fprintf(logw, "Downloaded aria2 to %s (%s)\n", dest, line)
+	}
+	return dest, nil
+}
+
+// downloadAria2Binary fetches a portable aria2c for the current OS/arch.
+// Sources (in order):
+//  1. abcfy2/aria2-static-build — static musl/mingw builds (Linux + Windows)
+//  2. Official aria2/aria2 Windows zip
+//  3. Homebrew bottles for macOS (and Linux fallback)
+func downloadAria2Binary(depsDir, dest string, logw io.Writer) error {
+	var errs []string
+
+	if url, asset := aria2StaticBuildURL(); url != "" {
+		fmt.Fprintf(logw, "Fetching aria2 static build (%s)...\n", asset)
+		if err := downloadAndExtractAria2(url, depsDir, dest); err == nil {
+			return nil
+		} else {
+			errs = append(errs, fmt.Sprintf("static build: %v", err))
+			fmt.Fprintf(logw, "Warning: static build failed: %v\n", err)
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(logw, "Fetching official aria2 Windows release...\n")
+		if err := downloadAria2OfficialWindows(depsDir, dest); err == nil {
+			return nil
+		} else {
+			errs = append(errs, fmt.Sprintf("official windows: %v", err))
+		}
+	}
+
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		fmt.Fprintf(logw, "Fetching aria2 via Homebrew bottle...\n")
+		if err := downloadAria2BrewBottle(depsDir, dest); err == nil {
+			return nil
+		} else {
+			errs = append(errs, fmt.Sprintf("brew bottle: %v", err))
+		}
+	}
+
+	if len(errs) == 0 {
+		return fmt.Errorf("no aria2 download source for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	return fmt.Errorf("all aria2 download sources failed: %s", strings.Join(errs, "; "))
+}
+
+// aria2StaticBuildURL returns a direct zip URL from abcfy2/aria2-static-build.
+func aria2StaticBuildURL() (url, asset string) {
+	// Prefer latest release; fall back to known-good tag.
+	const repoOwner, repoName = "abcfy2", "aria2-static-build"
+	want := ""
+	switch {
+	case runtime.GOOS == "linux" && runtime.GOARCH == "amd64":
+		want = "aria2-x86_64-linux-musl_static.zip"
+	case runtime.GOOS == "linux" && runtime.GOARCH == "arm64":
+		want = "aria2-aarch64-linux-musl_static.zip"
+	case runtime.GOOS == "linux" && (runtime.GOARCH == "arm" || runtime.GOARCH == "armv7"):
+		want = "aria2-armv7-linux-musleabihf_static.zip"
+	case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
+		want = "aria2-x86_64-w64-mingw32_static.zip"
+	case runtime.GOOS == "windows" && runtime.GOARCH == "386":
+		want = "aria2-i686-w64-mingw32_static.zip"
+	default:
+		return "", ""
+	}
+
+	client := github.NewClient(nil)
+	release, _, err := client.Repositories.GetLatestRelease(context.Background(), repoOwner, repoName)
+	if err == nil {
+		for _, a := range release.Assets {
+			if a.GetName() == want {
+				return a.GetBrowserDownloadURL(), want
+			}
+		}
+	}
+	// Pinned fallback
+	return fmt.Sprintf("https://github.com/%s/%s/releases/download/1.37.0/%s", repoOwner, repoName, want), want
+}
+
+func downloadAndExtractAria2(url, depsDir, dest string) error {
+	tmp := filepath.Join(depsDir, "aria2_download.tmp")
+	defer os.Remove(tmp)
+	if err := downloadFileHTTP(url, tmp, nil); err != nil {
+		return err
+	}
+	// abcfy2 zips contain a bare aria2c / aria2c.exe
+	binBase := filepath.Base(dest)
+	if err := extractBinariesFromZip(tmp, map[string]string{binBase: dest}); err != nil {
+		// Also try without .exe mismatch / nested paths
+		if err2 := extractBinaryNamed(tmp, dest, "aria2c"); err2 != nil {
+			return err
+		}
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(dest, 0o755)
+	}
+	return nil
+}
+
+func downloadAria2OfficialWindows(depsDir, dest string) error {
+	client := github.NewClient(nil)
+	release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
+	if err != nil {
+		return err
+	}
+	var downloadURL string
+	for _, asset := range release.Assets {
+		n := strings.ToLower(asset.GetName())
+		if strings.Contains(n, "win") && strings.Contains(n, "64bit") && strings.HasSuffix(n, ".zip") {
+			downloadURL = asset.GetBrowserDownloadURL()
+			break
+		}
+	}
+	if downloadURL == "" {
+		return errors.New("no Windows 64-bit aria2 asset in official release")
+	}
+	tmp := filepath.Join(depsDir, "aria2_official.zip")
+	defer os.Remove(tmp)
+	if err := downloadFileHTTP(downloadURL, tmp, nil); err != nil {
+		return err
+	}
+	return extractBinaryNamed(tmp, dest, "aria2c")
+}
+
+// downloadAria2BrewBottle pulls a Homebrew bottle (works for macOS; Linux fallback).
+func downloadAria2BrewBottle(depsDir, dest string) error {
+	req, err := http.NewRequest(http.MethodGet, "https://formulae.brew.sh/api/formula/aria2.json", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("brew api HTTP %s", resp.Status)
+	}
+	var meta struct {
+		Bottle struct {
+			Stable struct {
+				Files map[string]struct {
+					URL string `json:"url"`
+				} `json:"files"`
+			} `json:"stable"`
+		} `json:"bottle"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		return err
+	}
+	files := meta.Bottle.Stable.Files
+	// Prefer keys matching current platform
+	candidates := []string{}
+	switch {
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
+		candidates = []string{"arm64_tahoe", "arm64_sequoia", "arm64_sonoma", "arm64_ventura", "arm64_monterey"}
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "amd64":
+		candidates = []string{"sonoma", "ventura", "monterey", "big_sur"}
+	case runtime.GOOS == "linux" && runtime.GOARCH == "amd64":
+		candidates = []string{"x86_64_linux"}
+	case runtime.GOOS == "linux" && runtime.GOARCH == "arm64":
+		candidates = []string{"arm64_linux"}
+	}
+	var bottleURL string
+	for _, k := range candidates {
+		if f, ok := files[k]; ok && f.URL != "" {
+			bottleURL = f.URL
+			break
+		}
+	}
+	if bottleURL == "" {
+		// any available
+		for _, f := range files {
+			if f.URL != "" {
+				bottleURL = f.URL
+				break
+			}
+		}
+	}
+	if bottleURL == "" {
+		return errors.New("no brew bottle URL for this platform")
+	}
+
+	tmp := filepath.Join(depsDir, "aria2_bottle.tar.gz")
+	defer os.Remove(tmp)
+	req2, err := http.NewRequest(http.MethodGet, bottleURL, nil)
+	if err != nil {
+		return err
+	}
+	// Anonymous GHCR pull (Homebrew convention)
+	req2.Header.Set("Authorization", "Bearer QQ==")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		return err
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		return fmt.Errorf("bottle download HTTP %s", resp2.Status)
+	}
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, resp2.Body)
+	out.Close()
+	if err != nil {
+		return err
+	}
+	return extractAria2FromTarGz(tmp, dest)
+}
+
+func extractAria2FromTarGz(archivePath, dest string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	want := "aria2c"
+	if runtime.GOOS == "windows" {
+		want = "aria2c.exe"
+	}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if hdr.FileInfo().IsDir() {
+			continue
+		}
+		base := filepath.Base(hdr.Name)
+		if base != want && base != "aria2c" {
+			continue
+		}
+		out, err := os.Create(dest)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(out, tr)
+		out.Close()
+		if err != nil {
+			return err
+		}
+		if runtime.GOOS != "windows" {
+			_ = os.Chmod(dest, 0o755)
+		}
+		return nil
+	}
+	return errors.New("aria2c not found in brew bottle")
+}
+
+// extractBinaryNamed extracts the first zip entry whose base name is binBase or binBase.exe.
+func extractBinaryNamed(zipPath, dest, binBase string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	want := []string{binBase, binBase + ".exe", filepath.Base(dest)}
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		base := filepath.Base(f.Name)
+		match := false
+		for _, w := range want {
+			if strings.EqualFold(base, w) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(dest)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		_, err = io.Copy(out, rc)
+		out.Close()
+		rc.Close()
+		if err != nil {
+			return err
+		}
+		if runtime.GOOS != "windows" {
+			_ = os.Chmod(dest, 0o755)
+		}
+		return nil
+	}
+	return fmt.Errorf("%s not found in archive", binBase)
+}
+
+func downloadFileHTTP(url, dest string, headers map[string]string) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %s", resp.Status)
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, resp.Body)
+	return err
 }
 
 // ensureFFmpeg finds or downloads a static FFmpeg binary into depsDir.
@@ -605,10 +898,9 @@ func extractBinariesFromZip(zipPath string, want map[string]string) error {
 			break
 		}
 	}
-	// Need at least the primary binary (first key that looks like ffmpeg)
 	for name := range want {
-		if strings.HasPrefix(name, "ffmpeg") && !found[name] {
-			return fmt.Errorf("ffmpeg not found in zip")
+		if !found[name] {
+			return fmt.Errorf("%s not found in zip", name)
 		}
 	}
 	return nil

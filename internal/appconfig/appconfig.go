@@ -38,10 +38,10 @@ var (
 // tmdb = "your-tmdb-api-key"
 //
 // [ui]
-// font = "Inter"
+// font = "Roboto"
 // font_size = "14"
 // scale = "100"
-// animations = true
+// animations = false
 
 // Init initializes Viper and loads the config file.
 // Safe to call multiple times; only runs once.
@@ -73,11 +73,12 @@ func Init() {
 		v.SetDefault("api_keys.tmdb", "")
 
 		// Desktop UI preferences (persisted across rebuilds; not WebView localStorage)
-		// animations defaults ON for first-time installs
-		v.SetDefault("ui.font", "Inter")
+		// First-run defaults: Roboto font, animations OFF, start on Yaria tab
+		v.SetDefault("ui.font", "Roboto")
 		v.SetDefault("ui.font_size", "14")
 		v.SetDefault("ui.scale", "100")
-		v.SetDefault("ui.animations", true)
+		v.SetDefault("ui.animations", false)
+		v.SetDefault("ui.startup_tab", "yaria")
 		// Blur default is platform-specific — leave unset and resolve in getters
 
 		// Prefer app.toml; migrate app.yaml → app.toml once if needed
@@ -368,25 +369,48 @@ func SetMediaServerPin(pin string) error {
 
 // UISettings holds desktop UI customization options.
 type UISettings struct {
-	Font                   string `json:"font"`
-	FontSize               string `json:"font_size"`
-	Scale                  string `json:"scale"`
-	Animations             bool   `json:"animations"`
-	Blur                   bool   `json:"blur"`
-	PlayerBackend          string `json:"player_backend"` // "webview" (default) | "libmpv"
-	MantorexLegalAccepted  bool   `json:"mantorex_legal_accepted"`
+	Font                  string `json:"font"`
+	FontSize              string `json:"font_size"`
+	Scale                 string `json:"scale"`
+	Animations            bool   `json:"animations"`
+	Blur                  bool   `json:"blur"`
+	PlayerBackend         string `json:"player_backend"` // "webview" (default) | "libmpv"
+	StartupTab            string `json:"startup_tab"`    // "yaria" (default) | "mantorex"
+	MantorexLegalAccepted bool   `json:"mantorex_legal_accepted"`
+}
+
+// migrateLegacyUIDefaults fixes configs written by an older SafeWriteConfig that
+// stamped Inter + animations=true on first launch before the user chose anything.
+// Marked with ui.defaults_v2 so it only runs once.
+func migrateLegacyUIDefaults() {
+	if v.GetBool("ui.defaults_v2") {
+		return
+	}
+	font := v.GetString("ui.font")
+	// Old factory default was Inter; new factory default is Roboto.
+	if font == "" || font == "Inter" {
+		v.Set("ui.font", "Roboto")
+		// Pair with animations off when correcting the old factory stamp
+		v.Set("ui.animations", false)
+	}
+	if !v.IsSet("ui.animations") {
+		v.Set("ui.animations", false)
+	}
+	v.Set("ui.defaults_v2", true)
+	_ = Save()
 }
 
 // GetUISettings returns desktop UI preferences.
 // Blur defaults to false on Linux (WebKitGTK glitches) when never set.
+// First-run defaults: font Roboto, animations off.
 func GetUISettings() UISettings {
 	Init()
+	migrateLegacyUIDefaults()
+
 	blur := true
 	if v.IsSet("ui.blur") {
 		blur = v.GetBool("ui.blur")
 	}
-	// When unset, callers may still override by platform; we store the raw default true
-	// and let the frontend apply Linux default if needed via a separate flag.
 	anims := false // off by default (first install)
 	if v.IsSet("ui.animations") {
 		anims = v.GetBool("ui.animations")
@@ -407,6 +431,10 @@ func GetUISettings() UISettings {
 	if backend != "libmpv" {
 		backend = "webview"
 	}
+	startup := v.GetString("ui.startup_tab")
+	if startup != "mantorex" {
+		startup = "yaria"
+	}
 	return UISettings{
 		Font:                  font,
 		FontSize:              size,
@@ -414,6 +442,7 @@ func GetUISettings() UISettings {
 		Animations:            anims,
 		Blur:                  blur,
 		PlayerBackend:         backend,
+		StartupTab:            startup,
 		MantorexLegalAccepted: v.GetBool("ui.mantorex_legal_accepted"),
 	}
 }
@@ -445,12 +474,16 @@ func SetUISettings(s UISettings) error {
 	if s.PlayerBackend != "libmpv" {
 		s.PlayerBackend = "webview"
 	}
+	if s.StartupTab != "mantorex" {
+		s.StartupTab = "yaria"
+	}
 	v.Set("ui.font", s.Font)
 	v.Set("ui.font_size", s.FontSize)
 	v.Set("ui.scale", s.Scale)
 	v.Set("ui.animations", s.Animations)
 	v.Set("ui.blur", s.Blur)
 	v.Set("ui.player_backend", s.PlayerBackend)
+	v.Set("ui.startup_tab", s.StartupTab)
 	v.Set("ui.mantorex_legal_accepted", s.MantorexLegalAccepted)
 	return Save()
 }

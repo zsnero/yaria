@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"strings"
 
-	"yaria/internal/yaria/utils"
+	"yaria/internal/yaria/downloader"
 
 	"github.com/google/go-github/v62/github"
 )
@@ -173,47 +173,31 @@ func installAria2c(depsDir string, progress func(string, string, string)) Dep {
 	bin := binaryName("aria2c")
 	dest := filepath.Join(depsDir, bin)
 
-	if runtime.GOOS == "windows" {
-		// Windows: download pre-built binary from GitHub releases zip
-		progress(name, "updating", "Fetching latest release...")
-		client := github.NewClient(nil)
-		release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
-		if err != nil {
-			return depFailed(name, bin, progress, fmt.Sprintf("Failed to fetch release: %v", err))
-		}
-
-		var downloadURL string
-		for _, asset := range release.Assets {
-			n := strings.ToLower(asset.GetName())
-			if strings.Contains(n, "win") && strings.Contains(n, "64bit") && strings.HasSuffix(n, ".zip") {
-				downloadURL = asset.GetBrowserDownloadURL()
-				break
-			}
-		}
-		if downloadURL == "" {
-			return depFailed(name, bin, progress, "No Windows 64-bit binary found")
-		}
-
-		progress(name, "updating", "Downloading...")
-		zipPath := filepath.Join(depsDir, "aria2.zip")
-		if err := downloadFile(downloadURL, zipPath); err != nil {
-			return depFailed(name, bin, progress, fmt.Sprintf("Download failed: %v", err))
-		}
-		defer os.Remove(zipPath)
-
-		progress(name, "updating", "Extracting...")
-		if err := extractBinaryFromZip(zipPath, dest, "aria2c"); err != nil {
-			return depFailed(name, bin, progress, fmt.Sprintf("Extract failed: %v", err))
-		}
-		progress(name, "updated", "OK")
-		return Dep{Name: name, Binary: bin, Status: "updated", Path: dest, Message: "OK"}
+	progress(name, "updating", "Downloading portable aria2...")
+	logw := &progressWriter{fn: progress, name: name}
+	path, err := downloader.EnsureAria2(depsDir, logw)
+	if err != nil {
+		return depFailed(name, bin, progress, err.Error())
 	}
+	if path != "" {
+		dest = path
+	}
+	progress(name, "updated", "OK")
+	return Dep{Name: name, Binary: bin, Status: "updated", Path: dest, Message: "OK"}
+}
 
-	// Linux/macOS: aria2 only publishes source code, not pre-built binaries.
-	// User must install via their system package manager.
-	cmd := utils.Aria2InstallCmd()
-	return depFailed(name, bin, progress,
-		fmt.Sprintf("aria2 requires manual installation:\n  %s", cmd))
+// progressWriter adapts deps progress callbacks to io.Writer for EnsureAria2.
+type progressWriter struct {
+	fn   func(name, status, msg string)
+	name string
+}
+
+func (w *progressWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimSpace(string(p))
+	if msg != "" && w.fn != nil {
+		w.fn(w.name, "updating", msg)
+	}
+	return len(p), nil
 }
 
 func installDeno(depsDir string, progress func(string, string, string)) Dep {

@@ -67,6 +67,10 @@ func New() *Config {
 
 // Logs and waits before retrying
 func (c *Config) WaitBeforeRetry(attempt int) {
-	fmt.Fprintf(c.Stdout, "Waiting %v before retrying...\n", c.RetryDelay)
+	w := c.Stdout
+	if w == nil {
+		w = io.Discard
+	}
+	fmt.Fprintf(w, "Waiting %v before retrying...\n", c.RetryDelay)
 	time.Sleep(c.RetryDelay)
 }

@@ -1,7 +1,6 @@
 package yaria
 
 import (
-	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
@@ -90,30 +89,12 @@ func Run(args []string) {
 		}
 	}
 
-	// Setup aria2
-	aria2Binary := "aria2c"
-	if runtime.GOOS == "windows" {
-		aria2Binary = "aria2c.exe"
+	// Setup aria2 (required — auto-download portable build on first launch)
+	if _, err := downloader.EnsureAria2(depsDir, os.Stderr); err != nil {
+		log.Error("Error: aria2 setup failed: %v", err)
+		os.Exit(1)
 	}
-	aria2Path := filepath.Join(depsDir, aria2Binary)
-	if _, err := exec.LookPath(aria2Binary); err != nil {
-		if _, err := os.Stat(aria2Path); err == nil {
-			cfg.UseAria2c = true
-		} else if runtime.GOOS == "windows" {
-			fmt.Fprintln(os.Stderr, "aria2 not found. Downloading...")
-			if err := downloadAria2Windows(depsDir, aria2Path); err != nil {
-				cfg.UseAria2c = false
-				fmt.Fprintf(os.Stderr, "aria2 download failed. Downloads will be slower. Install: %s\n", utils.Aria2InstallCmd())
-			} else {
-				cfg.UseAria2c = true
-			}
-		} else {
-			cfg.UseAria2c = false
-			fmt.Fprintf(os.Stderr, "aria2 not found, downloads will be slower. Install: %s\n", utils.Aria2InstallCmd())
-		}
-	} else {
-		cfg.UseAria2c = true
-	}
+	cfg.UseAria2c = true
 
 	// Update PATH
 	currentPath := os.Getenv("PATH")
@@ -295,80 +276,4 @@ func autoDownloadYtDlp(binaryName, destPath string) error {
 	return nil
 }
 
-// downloadAria2Windows downloads the pre-built aria2 binary from GitHub releases.
-// Only works on Windows since aria2 only publishes Windows and Android pre-built binaries.
-func downloadAria2Windows(depsDir, dest string) error {
-	client := github.NewClient(nil)
-	release, _, err := client.Repositories.GetLatestRelease(context.Background(), "aria2", "aria2")
-	if err != nil {
-		return fmt.Errorf("failed to fetch aria2 release: %w", err)
-	}
 
-	// Find the win-64bit zip asset
-	var downloadURL string
-	for _, asset := range release.Assets {
-		name := strings.ToLower(asset.GetName())
-		if strings.Contains(name, "win") && strings.Contains(name, "64bit") && strings.HasSuffix(name, ".zip") {
-			downloadURL = asset.GetBrowserDownloadURL()
-			break
-		}
-	}
-	if downloadURL == "" {
-		return errors.New("no Windows 64-bit aria2 binary found in GitHub releases")
-	}
-
-	// Download the zip
-	zipPath := filepath.Join(depsDir, "aria2.zip")
-	defer os.Remove(zipPath)
-
-	resp, err := http.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: HTTP %s", resp.Status)
-	}
-
-	out, err := os.Create(zipPath)
-	if err != nil {
-		return err
-	}
-	if _, err = io.Copy(out, resp.Body); err != nil {
-		out.Close()
-		return err
-	}
-	out.Close()
-
-	// Extract aria2c.exe from the zip
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return fmt.Errorf("failed to open zip: %w", err)
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		name := filepath.Base(f.Name)
-		if strings.EqualFold(name, "aria2c.exe") {
-			rc, err := f.Open()
-			if err != nil {
-				return err
-			}
-			out, err := os.Create(dest)
-			if err != nil {
-				rc.Close()
-				return err
-			}
-			if _, err = io.Copy(out, rc); err != nil {
-				out.Close()
-				rc.Close()
-				return err
-			}
-			out.Close()
-			rc.Close()
-			return nil
-		}
-	}
-
-	return errors.New("aria2c.exe not found in zip archive")
-}
