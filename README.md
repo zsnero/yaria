@@ -11,16 +11,16 @@
 </p>
 
 <p align="center">
-  <a href="https://yaria.live"><img src="https://img.shields.io/badge/🌐_Website-yaria.live-8b6cef?style=for-the-badge" alt="Website" /></a>
-  <a href="https://www.npmjs.com/package/@zsnero/yaria"><img src="https://img.shields.io/badge/npm-@zsnero%2Fyaria-CB3837?style=for-the-badge&logo=npm&logoColor=white" alt="npm" /></a>
-  <a href="https://yaria.live/docs"><img src="https://img.shields.io/badge/📖_Docs-Guide-6366f1?style=for-the-badge" alt="Docs" /></a>
+  <a href="https://yaria.live"><img src="https://img.shields.io/badge/website-yaria.live-8b6cef?style=for-the-badge" alt="Website" /></a>
+  <a href="https://www.npmjs.com/package/@zsnero/yaria"><img src="https://img.shields.io/npm/v/@zsnero/yaria?style=for-the-badge&logo=npm&logoColor=white&label=npm" alt="npm" /></a>
+  <a href="https://yaria.live/docs"><img src="https://img.shields.io/badge/docs-guide-6366f1?style=for-the-badge" alt="Docs" /></a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
-  <img src="https://img.shields.io/badge/TUI-Bubble%20Tea-FF5F87?style=flat-square" alt="Bubble Tea" />
-  <img src="https://img.shields.io/badge/Linux-macOS-Windows-success?style=flat-square" alt="Platforms" />
-  <img src="https://img.shields.io/badge/yt--dlp-aria2-ffmpeg-lightgrey?style=flat-square" alt="Stack" />
+  <img src="https://img.shields.io/badge/TUI-Bubble_Tea-FF5F87?style=flat-square" alt="Bubble Tea" />
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-success?style=flat-square" alt="Platforms" />
+  <img src="https://img.shields.io/badge/powered_by-yt--dlp%20%2B%20aria2-lightgrey?style=flat-square" alt="Stack" />
 </p>
 
 ---
@@ -28,9 +28,9 @@
 ## ✨ Demo
 
 <p align="center">
-  <img src="assets/screenshot-yaria.png" alt="Yaria" width="900" />
+  <img src="assets/yaria-cli.png" alt="Yaria CLI" width="900" />
 </p>
-<p align="center"><sub>Same download engine powers the <a href="https://github.com/zsnero/yaria-app">desktop app</a> and this CLI</sub></p>
+<p align="center"><sub>Interactive TUI · same engine as the <a href="https://github.com/zsnero/yaria-app">desktop app</a></sub></p>
 
 ---
 
