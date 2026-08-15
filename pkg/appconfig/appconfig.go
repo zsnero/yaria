@@ -55,9 +55,14 @@ func SetMediaVideoDirs(dirs []string) error { return appconfig.SetMediaVideoDirs
 // --- Desktop UI ---
 
 type UISettings = appconfig.UISettings
+type PlayerSettings = appconfig.PlayerSettings
 
 func GetUISettings() UISettings              { return appconfig.GetUISettings() }
 func SetUISettings(s UISettings) error       { return appconfig.SetUISettings(s) }
+func GetPlayerSettings() PlayerSettings      { return appconfig.GetPlayerSettings() }
+func SetPlayerSettings(s PlayerSettings) error {
+	return appconfig.SetPlayerSettings(s)
+}
 func BlurIsSet() bool                        { return appconfig.BlurIsSet() }
 func UIConfigured() bool                     { return appconfig.UIConfigured() }
 

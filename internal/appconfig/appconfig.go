@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -374,9 +375,23 @@ type UISettings struct {
 	Scale                 string `json:"scale"`
 	Animations            bool   `json:"animations"`
 	Blur                  bool   `json:"blur"`
-	PlayerBackend         string `json:"player_backend"` // "webview" (default) | "libmpv"
+	PlayerBackend         string `json:"player_backend"` // "webview" | "libmpv" (Linux default: libmpv)
 	StartupTab            string `json:"startup_tab"`    // "yaria" (default) | "mantorex"
 	MantorexLegalAccepted bool   `json:"mantorex_legal_accepted"`
+}
+
+// PlayerSettings holds native mpv/libmpv tuning (defaults match current hardcoded behavior).
+type PlayerSettings struct {
+	// Hwdec: "no" | "auto-safe" (default) | "auto"
+	Hwdec string `json:"hwdec"`
+	// Cache: "low" | "normal" (default) | "high" — demuxer/stream cache for torrents
+	Cache string `json:"cache"`
+	// HqScale enables higher-quality scaling (slightly more GPU)
+	HqScale bool `json:"hq_scale"`
+	// Deinterlace enables yadif deinterlace
+	Deinterlace bool `json:"deinterlace"`
+	// LoadUserConfig loads ~/.config/mpv (or platform equivalent). Off by default — can break embed.
+	LoadUserConfig bool `json:"load_user_config"`
 }
 
 // migrateLegacyUIDefaults fixes configs written by an older SafeWriteConfig that
@@ -428,7 +443,14 @@ func GetUISettings() UISettings {
 		scale = "100"
 	}
 	backend := v.GetString("ui.player_backend")
-	if backend != "libmpv" {
+	if backend == "" {
+		// Linux: native player by default (better codecs / HEVC). Windows stays WebView until validated.
+		if runtime.GOOS == "linux" {
+			backend = "libmpv"
+		} else {
+			backend = "webview"
+		}
+	} else if backend != "libmpv" {
 		backend = "webview"
 	}
 	startup := v.GetString("ui.startup_tab")
@@ -485,6 +507,51 @@ func SetUISettings(s UISettings) error {
 	v.Set("ui.player_backend", s.PlayerBackend)
 	v.Set("ui.startup_tab", s.StartupTab)
 	v.Set("ui.mantorex_legal_accepted", s.MantorexLegalAccepted)
+	return Save()
+}
+
+// GetPlayerSettings returns native player tuning options.
+func GetPlayerSettings() PlayerSettings {
+	Init()
+	hw := v.GetString("player.hwdec")
+	switch hw {
+	case "no", "auto", "auto-safe":
+	default:
+		hw = "auto-safe"
+	}
+	cache := v.GetString("player.cache")
+	switch cache {
+	case "low", "normal", "high":
+	default:
+		cache = "normal"
+	}
+	return PlayerSettings{
+		Hwdec:          hw,
+		Cache:          cache,
+		HqScale:        v.GetBool("player.hq_scale"),
+		Deinterlace:    v.GetBool("player.deinterlace"),
+		LoadUserConfig: v.GetBool("player.load_user_config"),
+	}
+}
+
+// SetPlayerSettings saves native player tuning options.
+func SetPlayerSettings(s PlayerSettings) error {
+	Init()
+	switch s.Hwdec {
+	case "no", "auto", "auto-safe":
+	default:
+		s.Hwdec = "auto-safe"
+	}
+	switch s.Cache {
+	case "low", "normal", "high":
+	default:
+		s.Cache = "normal"
+	}
+	v.Set("player.hwdec", s.Hwdec)
+	v.Set("player.cache", s.Cache)
+	v.Set("player.hq_scale", s.HqScale)
+	v.Set("player.deinterlace", s.Deinterlace)
+	v.Set("player.load_user_config", s.LoadUserConfig)
 	return Save()
 }
 
