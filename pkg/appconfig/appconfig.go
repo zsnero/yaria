@@ -69,3 +69,17 @@ func UIConfigured() bool                     { return appconfig.UIConfigured() }
 type MantorexConfig = appconfig.MantorexConfig
 
 func GetMantorexConfig() MantorexConfig { return appconfig.GetMantorexConfig() }
+
+// --- Jackett / Torznab ---
+
+func JackettEnabled() bool              { return appconfig.JackettEnabled() }
+func SetJackettEnabled(b bool) error    { return appconfig.SetJackettEnabled(b) }
+func JackettURL() string                { return appconfig.JackettURL() }
+func SetJackettURL(url string) error    { return appconfig.SetJackettURL(url) }
+func JackettAPIKey() string             { return appconfig.JackettAPIKey() }
+func SetJackettAPIKey(key string) error { return appconfig.SetJackettAPIKey(key) }
+
+// --- Provider management ---
+
+func EnabledProviders() []string              { return appconfig.EnabledProviders() }
+func SetEnabledProviders(names []string) error { return appconfig.SetEnabledProviders(names) }

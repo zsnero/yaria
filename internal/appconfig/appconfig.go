@@ -280,6 +280,62 @@ func SetProxyAddr(addr string) error {
 	return Save()
 }
 
+// --- Jackett / Torznab ---
+
+// JackettEnabled reports whether the Jackett meta-provider is enabled.
+func JackettEnabled() bool {
+	Init()
+	return v.GetBool("mantorex.jackett_enabled")
+}
+
+// SetJackettEnabled sets and saves the Jackett enabled flag.
+func SetJackettEnabled(enabled bool) error {
+	Init()
+	v.Set("mantorex.jackett_enabled", enabled)
+	return Save()
+}
+
+// JackettURL returns the configured Jackett base URL (e.g. "http://127.0.0.1:9117").
+func JackettURL() string {
+	Init()
+	return strings.TrimSpace(v.GetString("mantorex.jackett_url"))
+}
+
+// SetJackettURL sets and saves the Jackett base URL.
+func SetJackettURL(url string) error {
+	Init()
+	v.Set("mantorex.jackett_url", strings.TrimSpace(url))
+	return Save()
+}
+
+// JackettAPIKey returns the configured Jackett API key.
+func JackettAPIKey() string {
+	Init()
+	return strings.TrimSpace(v.GetString("mantorex.jackett_api_key"))
+}
+
+// SetJackettAPIKey sets and saves the Jackett API key.
+func SetJackettAPIKey(key string) error {
+	Init()
+	v.Set("mantorex.jackett_api_key", strings.TrimSpace(key))
+	return Save()
+}
+
+// EnabledProviders returns the list of enabled provider names.
+// An empty list means all providers are enabled (except Jackett).
+func EnabledProviders() []string {
+	Init()
+	return v.GetStringSlice("mantorex.enabled_providers")
+}
+
+// SetEnabledProviders sets and saves the list of enabled provider names.
+// Pass nil or empty slice to enable all providers (except Jackett).
+func SetEnabledProviders(names []string) error {
+	Init()
+	v.Set("mantorex.enabled_providers", names)
+	return Save()
+}
+
 // --- Media Library ---
 
 // MediaMovieDirs returns the configured movie directory paths.
@@ -575,26 +631,32 @@ func SetSpeedLimit(limit int64) error {
 // MantorexConfig holds all Mantorex settings in one struct
 // for backward compatibility with existing code that expects it.
 type MantorexConfig struct {
-	DataDir      string
-	ResultsLimit int
-	TorrentPort  int
-	HostPort     int
-	Debug        bool
-	Theme        string
-	TMDBApiKey   string
+	DataDir        string
+	ResultsLimit   int
+	TorrentPort    int
+	HostPort       int
+	Debug          bool
+	Theme          string
+	TMDBApiKey     string
+	JackettEnabled bool
+	JackettURL     string
+	JackettAPIKey  string
 }
 
 // GetMantorexConfig returns all Mantorex config as a struct.
 func GetMantorexConfig() MantorexConfig {
 	Init()
 	return MantorexConfig{
-		DataDir:      v.GetString("mantorex.data_dir"),
-		ResultsLimit: v.GetInt("mantorex.results_limit"),
-		TorrentPort:  v.GetInt("mantorex.torrent_port"),
-		HostPort:     v.GetInt("mantorex.host_port"),
-		Debug:        v.GetBool("mantorex.debug"),
-		Theme:        v.GetString("mantorex.theme"),
-		TMDBApiKey:   v.GetString("api_keys.tmdb"),
+		DataDir:        v.GetString("mantorex.data_dir"),
+		ResultsLimit:   v.GetInt("mantorex.results_limit"),
+		TorrentPort:    v.GetInt("mantorex.torrent_port"),
+		HostPort:       v.GetInt("mantorex.host_port"),
+		Debug:          v.GetBool("mantorex.debug"),
+		Theme:          v.GetString("mantorex.theme"),
+		TMDBApiKey:     v.GetString("api_keys.tmdb"),
+		JackettEnabled: v.GetBool("mantorex.jackett_enabled"),
+		JackettURL:     strings.TrimSpace(v.GetString("mantorex.jackett_url")),
+		JackettAPIKey:  strings.TrimSpace(v.GetString("mantorex.jackett_api_key")),
 	}
 }
 
