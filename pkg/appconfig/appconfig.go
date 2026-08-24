@@ -34,6 +34,17 @@ func SetProxyAddr(addr string) error { return appconfig.SetProxyAddr(addr) }
 func SpeedLimit() int64                { return appconfig.SpeedLimit() }
 func SetSpeedLimit(limit int64) error  { return appconfig.SetSpeedLimit(limit) }
 
+// --- Browser extension bridge ---
+
+func BrowserExtensionEnabled() bool                 { return appconfig.BrowserExtensionEnabled() }
+func SetBrowserExtensionEnabled(b bool) error       { return appconfig.SetBrowserExtensionEnabled(b) }
+func BrowserExtensionPort() int                     { return appconfig.BrowserExtensionPort() }
+func SetBrowserExtensionPort(p int) error           { return appconfig.SetBrowserExtensionPort(p) }
+func BrowserExtensionToken() string                 { return appconfig.BrowserExtensionToken() }
+func SetBrowserExtensionToken(t string) error       { return appconfig.SetBrowserExtensionToken(t) }
+func BrowserExtensionDownloadDir() string           { return appconfig.BrowserExtensionDownloadDir() }
+func SetBrowserExtensionDownloadDir(d string) error { return appconfig.SetBrowserExtensionDownloadDir(d) }
+
 // --- Media Server ---
 
 func MediaServerEnabled() bool              { return appconfig.MediaServerEnabled() }

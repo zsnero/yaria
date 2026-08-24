@@ -377,6 +377,72 @@ func SetMediaVideoDirs(dirs []string) error {
 	return Save()
 }
 
+// --- Browser extension bridge ---
+
+// BrowserExtensionEnabled returns whether the local extension bridge is on.
+// Defaults to true when the key is unset so first-run users can pair immediately.
+func BrowserExtensionEnabled() bool {
+	Init()
+	if !v.IsSet("browser_extension.enabled") {
+		return true
+	}
+	return v.GetBool("browser_extension.enabled")
+}
+
+// SetBrowserExtensionEnabled sets and saves the extension bridge enabled flag.
+func SetBrowserExtensionEnabled(enabled bool) error {
+	Init()
+	v.Set("browser_extension.enabled", enabled)
+	return Save()
+}
+
+// BrowserExtensionPort returns the localhost bridge port (default 19547).
+func BrowserExtensionPort() int {
+	Init()
+	port := v.GetInt("browser_extension.port")
+	if port <= 0 || port > 65535 {
+		return 19547
+	}
+	return port
+}
+
+// SetBrowserExtensionPort sets and saves the extension bridge port.
+func SetBrowserExtensionPort(port int) error {
+	Init()
+	if port <= 0 || port > 65535 {
+		port = 19547
+	}
+	v.Set("browser_extension.port", port)
+	return Save()
+}
+
+// BrowserExtensionToken returns the bearer token required by the extension bridge.
+func BrowserExtensionToken() string {
+	Init()
+	return strings.TrimSpace(v.GetString("browser_extension.token"))
+}
+
+// SetBrowserExtensionToken sets and saves the extension bridge token.
+func SetBrowserExtensionToken(token string) error {
+	Init()
+	v.Set("browser_extension.token", strings.TrimSpace(token))
+	return Save()
+}
+
+// BrowserExtensionDownloadDir returns the default folder for Bridge extension downloads.
+// Empty means use the system Downloads folder.
+func BrowserExtensionDownloadDir() string {
+	Init()
+	return strings.TrimSpace(v.GetString("browser_extension.download_dir"))
+}
+
+// SetBrowserExtensionDownloadDir sets and saves the Bridge download directory.
+func SetBrowserExtensionDownloadDir(dir string) error {
+	Init()
+	v.Set("browser_extension.download_dir", strings.TrimSpace(dir))
+	return Save()
+}
+
 // --- Media Server ---
 
 // MediaServerEnabled returns whether the LAN media server is enabled.
@@ -434,6 +500,8 @@ type UISettings struct {
 	PlayerBackend         string `json:"player_backend"` // "webview" | "libmpv" (Linux default: libmpv)
 	StartupTab            string `json:"startup_tab"`    // "yaria" (default) | "mantorex"
 	MantorexLegalAccepted bool   `json:"mantorex_legal_accepted"`
+	// Spinner: orbit (default) | singularity | radar | warp | classic
+	Spinner string `json:"spinner"`
 }
 
 // PlayerSettings holds native mpv/libmpv tuning (defaults match current hardcoded behavior).
@@ -513,6 +581,12 @@ func GetUISettings() UISettings {
 	if startup != "mantorex" {
 		startup = "yaria"
 	}
+	spinner := v.GetString("ui.spinner")
+	switch spinner {
+	case "orbit", "singularity", "radar", "warp", "classic":
+	default:
+		spinner = "orbit"
+	}
 	return UISettings{
 		Font:                  font,
 		FontSize:              size,
@@ -522,6 +596,7 @@ func GetUISettings() UISettings {
 		PlayerBackend:         backend,
 		StartupTab:            startup,
 		MantorexLegalAccepted: v.GetBool("ui.mantorex_legal_accepted"),
+		Spinner:               spinner,
 	}
 }
 
@@ -555,6 +630,11 @@ func SetUISettings(s UISettings) error {
 	if s.StartupTab != "mantorex" {
 		s.StartupTab = "yaria"
 	}
+	switch s.Spinner {
+	case "orbit", "singularity", "radar", "warp", "classic":
+	default:
+		s.Spinner = "orbit"
+	}
 	v.Set("ui.font", s.Font)
 	v.Set("ui.font_size", s.FontSize)
 	v.Set("ui.scale", s.Scale)
@@ -563,6 +643,7 @@ func SetUISettings(s UISettings) error {
 	v.Set("ui.player_backend", s.PlayerBackend)
 	v.Set("ui.startup_tab", s.StartupTab)
 	v.Set("ui.mantorex_legal_accepted", s.MantorexLegalAccepted)
+	v.Set("ui.spinner", s.Spinner)
 	return Save()
 }
 

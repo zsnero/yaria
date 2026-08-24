@@ -1076,6 +1076,7 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	}
 
 	isProblematic := isProblematicSite(url)
+	directFile := IsDirectMediaURL(url)
 
 	// Single call: get title + playlist info at once
 	metaArgs := []string{
@@ -1085,6 +1086,11 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		"--socket-timeout", "20",
 		"--user-agent", userAgent,
 		"--legacy-server-connect",
+	}
+
+	// Direct CDN/file URLs: don't use site extractors (often broken / wrong match)
+	if directFile {
+		metaArgs = append(metaArgs, "--force-generic-extractor")
 	}
 
 	// Add site-specific headers
@@ -1160,20 +1166,35 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	}
 
 	// Parse combined output: "title|||playlist|||playlist_title|||playlist_count"
+	// yt-dlp may still print progress/log lines even with --print; also some
+	// extractors return empty title or "NA" — never hard-fail the whole download.
 	lines := strings.Split(string(output), "\n")
 	var title string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "ERROR:") ||
-			strings.HasPrefix(trimmed, "WARNING:") || strings.HasPrefix(trimmed, "[") {
+			strings.HasPrefix(trimmed, "WARNING:") || strings.HasPrefix(trimmed, "DEPRECATED") {
 			continue
+		}
+		// Skip pure log tags like [youtube] but keep titles that start with [
+		// only if they look like the print template (contain |||) or aren't extractor tags
+		if strings.HasPrefix(trimmed, "[") && !strings.Contains(trimmed, "|||") {
+			// e.g. [info] ..., [download] ...
+			if len(trimmed) > 2 && trimmed[1] >= 'a' && trimmed[1] <= 'z' {
+				continue
+			}
 		}
 		title = trimmed
 		break
 	}
 
-	if title == "" {
-		return "", "", errors.New("no title found")
+	if title == "" || title == "NA" || title == "None" || strings.HasPrefix(title, "|||") {
+		// Soft fallback: keep download going with a path-based name
+		fallback := fallbackTitleFromURL(args)
+		if fallback == "" {
+			fallback = "Download"
+		}
+		return "NA&NA&1", fallback, nil
 	}
 
 	// Parse the combined output: "title|||playlist|||playlist_title|||playlist_count"
@@ -1190,7 +1211,14 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 		playlistTitle = "NA"
 		playlistCount = "1"
 	}
-	title = videoTitle
+	title = strings.TrimSpace(videoTitle)
+	if title == "" || title == "NA" || title == "None" {
+		if fb := fallbackTitleFromURL(args); fb != "" {
+			title = fb
+		} else {
+			title = "Download"
+		}
+	}
 
 	if playlist == "" || playlist == "NA" || playlist == "None" {
 		playlist = "NA"
@@ -1200,6 +1228,50 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 
 	playlistInfo := fmt.Sprintf("%s&%s&%s", playlist, playlistTitle, playlistCount)
 	return playlistInfo, title, nil
+}
+
+// fallbackTitleFromURL picks a readable name from the last URL in yt-dlp args.
+func fallbackTitleFromURL(args []string) string {
+	var raw string
+	for i := len(args) - 1; i >= 0; i-- {
+		a := strings.TrimSpace(args[i])
+		if strings.HasPrefix(a, "http://") || strings.HasPrefix(a, "https://") {
+			raw = a
+			break
+		}
+	}
+	if raw == "" {
+		return ""
+	}
+	path := raw
+	if i := strings.Index(path, "://"); i >= 0 {
+		path = path[i+3:]
+		if j := strings.Index(path, "/"); j >= 0 {
+			path = path[j:]
+		}
+	}
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	base := filepath.Base(path)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	if base == "" || base == "/" || base == "." {
+		// YouTube watch?v=…
+		if idx := strings.Index(raw, "v="); idx >= 0 {
+			id := raw[idx+2:]
+			if amp := strings.IndexAny(id, "&#"); amp >= 0 {
+				id = id[:amp]
+			}
+			if id != "" {
+				return "youtube-" + id
+			}
+		}
+		return "Download"
+	}
+	// Unescape common encodings lightly
+	base = strings.ReplaceAll(base, "+", " ")
+	base = strings.ReplaceAll(base, "%20", " ")
+	return base
 }
 
 // StreamTorrent streams a torrent magnet link using webtorrent-cli with mpv or vlc
@@ -1706,6 +1778,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		// Slow mode: adult hosts only. Social/normal sites use full speed.
 		adultSlow := IsAdultSlowSite(argURL)
 		wantHeaders := NeedsSiteHeaders(argURL)
+		directFile := IsDirectMediaURL(argURL)
 
 		var cmdArgs []string
 		if adultSlow {
@@ -1743,6 +1816,11 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				"--socket-timeout", "20",
 			}
 		}
+		// Browser-sniffed file URLs (e.g. eporner /dload/) must use generic HTTP,
+		// not the site extractor (often outdated / broken).
+		if directFile {
+			cmdArgs = append(cmdArgs, "--force-generic-extractor")
+		}
 
 		// Add common arguments for both cases
 		cmdArgs = append(cmdArgs,
@@ -1755,7 +1833,12 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		// Attach browser cookies only if kooky can export quickly.
 		// Avoids Windows hangs from --cookies-from-browser / locked Edge DB.
 		// Public YouTube works without cookies; auth failures retry later without them.
-		dlCookieArgs := cookies.GetYTDLPCookieArgs(argURL, d.cfg.CookieBrowser)
+		cookieURL := argURL
+		if d.cfg.Referer != "" {
+			// Prefer cookies for the watch page host (CDN file hosts often share parent site cookies)
+			cookieURL = d.cfg.Referer
+		}
+		dlCookieArgs := cookies.GetYTDLPCookieArgs(cookieURL, d.cfg.CookieBrowser)
 		cmdArgs = append(cmdArgs, dlCookieArgs...)
 
 		// Headers only when needed (adult + a few picky hosts) — not full slow mode
@@ -1763,7 +1846,19 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			cmdArgs = append(cmdArgs, "--add-header", "Accept-Language:en-US,en;q=0.9")
 			cmdArgs = append(cmdArgs, getSiteHeaders(argURL)...)
 		}
-		if d.cfg.IsAudioOnly {
+		// Extension / caller-provided page referer (critical for /dload/ hotlinks)
+		if ref := strings.TrimSpace(d.cfg.Referer); ref != "" {
+			cmdArgs = append(cmdArgs, "--referer", ref)
+			cmdArgs = append(cmdArgs, "--add-header", "Referer:"+ref)
+		}
+		if directFile {
+			// Single progressive file — no format merge gymnastics
+			if d.cfg.IsAudioOnly {
+				cmdArgs = append(cmdArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
+			} else {
+				cmdArgs = append(cmdArgs, "--format", "best")
+			}
+		} else if d.cfg.IsAudioOnly {
 			cmdArgs = append(cmdArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
 		} else if d.cfg.Resolution != "" {
 			cmdArgs = append(cmdArgs, "--format", d.cfg.Resolution+"+bestaudio/best")
@@ -1786,7 +1881,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			}
 		}
 		// Merge into user-selected container format (default: mp4)
-		if !d.cfg.IsAudioOnly {
+		if !d.cfg.IsAudioOnly && !directFile {
 			fmt := d.cfg.ContainerFormat
 			if fmt == "" {
 				fmt = "mp4"
@@ -1799,7 +1894,10 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 
 		cmdArgs = append(cmdArgs, args...)
 
-		if d.cfg.UseAria2c {
+		// Prefer aria2 when enabled (faster multi-conn). Direct/hotlink CDNs that
+		// reject it are handled by an immediate retry without aria2 below.
+		useAria := d.cfg.UseAria2c
+		if useAria {
 			aria2Cmd := "aria2c"
 			if runtime.GOOS == "windows" {
 				aria2Cmd = "aria2c.exe"
@@ -1812,17 +1910,39 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 		if err == nil {
 			return true, nil
 		}
+		errText := stderrBuf.String() + " " + err.Error()
+
+		// aria2 first failed → retry same args without aria2 (common on hotlink CDNs)
+		if useAria && (directFile || isAriaHostileError(errText)) {
+			fmt.Fprintf(d.cfg.Stderr, "WARNING: aria2 download failed; retrying without aria2...\n")
+			noAriaArgs := stripAria2Args(cmdArgs)
+			stderrBuf.Reset()
+			if err2 := runYTDLPStreaming(ytDlpCmd, noAriaArgs, d.cfg.Stdout, io.MultiWriter(d.cfg.Stderr, stderrBuf)); err2 == nil {
+				return true, nil
+			} else {
+				err = err2
+				errText = stderrBuf.String() + " " + err2.Error()
+			}
+		}
 
 		// Cookie DB locked (Chrome open) — drop cookies and retry this attempt once.
-		if isCookieDBError(stderrBuf.String()) && hasCookieArgs(cmdArgs) {
+		if isCookieDBError(errText) && hasCookieArgs(cmdArgs) {
 			fmt.Fprintf(d.cfg.Stderr, "WARNING: browser cookie DB locked; retrying download without cookies\n")
-			noCookieArgs := stripCookieArgs(cmdArgs)
-			stderrBuf.Reset()
-			if err2 := runYTDLPStreaming(ytDlpCmd, noCookieArgs, d.cfg.Stdout, io.MultiWriter(d.cfg.Stderr, stderrBuf)); err2 == nil {
-				return true, nil
+			noCookieArgs := stripAria2Args(stripCookieArgs(cmdArgs))
+			// Keep aria2 only when it wasn't the failure mode
+			if useAria && !isAriaHostileError(errText) && !directFile {
+				aria2Cmd := "aria2c"
+				if runtime.GOOS == "windows" {
+					aria2Cmd = "aria2c.exe"
+				}
+				noCookieArgs = append(noCookieArgs, "--downloader", aria2Cmd, "--downloader-args", "aria2c:"+d.cfg.Aria2cArgs)
 			}
-			// Keep going into normal retry/fallback with the latest error text
-			err = err
+			stderrBuf.Reset()
+			if errNoCookie := runYTDLPStreaming(ytDlpCmd, noCookieArgs, d.cfg.Stdout, io.MultiWriter(d.cfg.Stderr, stderrBuf)); errNoCookie == nil {
+				return true, nil
+			} else {
+				err = errNoCookie
+			}
 		}
 
 		if attempt < d.cfg.MaxRetries {
@@ -1852,21 +1972,41 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 				"--legacy-server-connect",
 				"--output", tempDir + "/" + d.cfg.OutputTemplate,
 			}
+			if directFile {
+				fallbackArgs = append(fallbackArgs, "--force-generic-extractor")
+			}
+			if ref := strings.TrimSpace(d.cfg.Referer); ref != "" {
+				fallbackArgs = append(fallbackArgs, "--referer", ref, "--add-header", "Referer:"+ref)
+			}
 			if d.cfg.IsAudioOnly {
 				fallbackArgs = append(fallbackArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
+			} else if directFile {
+				fallbackArgs = append(fallbackArgs, "--format", "best")
 			} else {
 				fallbackArgs = append(fallbackArgs, "--format", "bestvideo[height<=1080]+bestaudio/best", "--merge-output-format", "mp4")
 			}
 			fallbackArgs = append(fallbackArgs, d.ffmpegArgs()...)
 			fallbackArgs = append(fallbackArgs, args...)
-			if d.cfg.UseAria2c {
-				aria2Cmd := "aria2c"
-				if runtime.GOOS == "windows" {
-					aria2Cmd = "aria2c.exe"
+
+			// Fallback: try aria2 once, then native yt-dlp
+			tryFallback := func(withAria bool) error {
+				args := append([]string{}, fallbackArgs...)
+				if withAria && d.cfg.UseAria2c {
+					aria2Cmd := "aria2c"
+					if runtime.GOOS == "windows" {
+						aria2Cmd = "aria2c.exe"
+					}
+					args = append(args, "--downloader", aria2Cmd, "--downloader-args", "aria2c:"+d.cfg.Aria2cArgs)
 				}
-				fallbackArgs = append(fallbackArgs, "--downloader", aria2Cmd, "--downloader-args", "aria2c:"+d.cfg.Aria2cArgs)
+				return runYTDLPStreaming(ytDlpCmd, args, d.cfg.Stdout, d.cfg.Stderr)
 			}
-			if err := runYTDLPStreaming(ytDlpCmd, fallbackArgs, d.cfg.Stdout, d.cfg.Stderr); err == nil {
+			if d.cfg.UseAria2c {
+				if err := tryFallback(true); err == nil {
+					return true, nil
+				}
+				fmt.Fprintf(d.cfg.Stderr, "WARNING: fallback with aria2 failed; trying without aria2...\n")
+			}
+			if err := tryFallback(false); err == nil {
 				return true, nil
 			} else if isCookieDBError(stderrBuf.String()) {
 				return false, errors.New("could not read browser cookies (close Chrome/Edge and try again, or continue without signing in)")
@@ -2009,6 +2149,47 @@ func stripCookieArgs(args []string) []string {
 			continue
 		}
 		if a == "--cookies" || a == "--cookies-from-browser" {
+			skipNext = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// isAriaHostileError detects failures where multi-connection aria2 often breaks
+// (hotlink CDNs, TLS resets) and a native yt-dlp retry is worth trying.
+func isAriaHostileError(msg string) bool {
+	m := strings.ToLower(msg)
+	switch {
+	case strings.Contains(m, "connection reset"),
+		strings.Contains(m, "connection aborted"),
+		strings.Contains(m, "connection refused"),
+		strings.Contains(m, "broken pipe"),
+		strings.Contains(m, "transport error"),
+		strings.Contains(m, "ssl"),
+		strings.Contains(m, "tls"),
+		strings.Contains(m, "http error 403"),
+		strings.Contains(m, "http error 429"),
+		strings.Contains(m, "unable to download"),
+		strings.Contains(m, "failed to open for writing"), // partial multi-conn mess
+		strings.Contains(m, "403"),
+		strings.Contains(m, "status code: 403"):
+		return true
+	default:
+		return false
+	}
+}
+
+func stripAria2Args(args []string) []string {
+	out := make([]string, 0, len(args))
+	skipNext := false
+	for _, a := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "--downloader" || a == "--downloader-args" {
 			skipNext = true
 			continue
 		}
@@ -2386,6 +2567,43 @@ func NeedsSiteHeaders(url string) bool {
 // PreferHLSFormat is true only for adult sites where progressive HTTPS is often blocked.
 func PreferHLSFormat(url string) bool {
 	return IsAdultSlowSite(url)
+}
+
+// IsDirectMediaURL reports whether url looks like a progressive file/stream URL
+// (mp4/m3u8/dload/…) rather than a site watch page. Used to skip broken site
+// extractors and force the generic downloader.
+func IsDirectMediaURL(raw string) bool {
+	u := strings.ToLower(strings.TrimSpace(raw))
+	if u == "" || (!strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://")) {
+		return false
+	}
+	// Watch / site pages are never "direct files"
+	if strings.Contains(u, "/watch?") || strings.Contains(u, "youtube.com/shorts/") {
+		return false
+	}
+	// eporner HTML pages: /video-ID/slug  (dload paths are direct)
+	if strings.Contains(u, "eporner.com/video-") && !strings.Contains(u, "/dload/") {
+		return false
+	}
+	if strings.Contains(u, "/dload/") || strings.Contains(u, "/download/") {
+		return true
+	}
+	if strings.Contains(u, ".m3u8") || strings.Contains(u, ".mpd") {
+		return true
+	}
+	path := u
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
+	if i := strings.Index(path, "#"); i >= 0 {
+		path = path[:i]
+	}
+	for _, ext := range []string{".mp4", ".m4v", ".webm", ".mkv", ".mov", ".mp3", ".m4a", ".flac", ".ts"} {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // isProblematicSite kept as alias for metadata path (headers only, not slow mode).

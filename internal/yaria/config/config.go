@@ -24,6 +24,8 @@ type Config struct {
 	CookieBrowser    string
 	ContainerFormat  string // "mp4", "mkv", "webm" — used for --merge-output-format
 	DownloadLocation string
+	// Referer, when set, is passed to yt-dlp (--referer) for hotlink/CDN downloads.
+	Referer string
 }
 
 // Persistent user preferences (theme etc.)

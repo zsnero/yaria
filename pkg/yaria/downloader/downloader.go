@@ -13,3 +13,7 @@ type Downloader = downloader.Downloader
 func New(cfg *config.Config) (*YTDLPDownloader, error) {
 	return downloader.New(cfg)
 }
+
+func IsDirectMediaURL(url string) bool {
+	return downloader.IsDirectMediaURL(url)
+}
