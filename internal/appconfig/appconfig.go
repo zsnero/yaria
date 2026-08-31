@@ -150,6 +150,23 @@ func SetYariaTheme(theme string) error {
 	return Save()
 }
 
+// YariaDownloadInFolder reports whether the downloader creates a title subfolder.
+// Default false: Title.ext in the download root. When true: Title/Title.ext.
+func YariaDownloadInFolder() bool {
+	Init()
+	if !v.IsSet("yaria.download_in_folder") {
+		return false
+	}
+	return v.GetBool("yaria.download_in_folder")
+}
+
+// SetYariaDownloadInFolder sets and saves folder-vs-flat layout preference.
+func SetYariaDownloadInFolder(inFolder bool) error {
+	Init()
+	v.Set("yaria.download_in_folder", inFolder)
+	return Save()
+}
+
 // --- Mantorex settings ---
 
 // expandTilde expands ~ to the user's home directory.

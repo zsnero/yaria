@@ -9,6 +9,10 @@ func ConfigDir() string                { return appconfig.ConfigDir() }
 func ConfigFile() string               { return appconfig.ConfigFile() }
 func YariaTheme() string               { return appconfig.YariaTheme() }
 func SetYariaTheme(t string) error     { return appconfig.SetYariaTheme(t) }
+func YariaDownloadInFolder() bool      { return appconfig.YariaDownloadInFolder() }
+func SetYariaDownloadInFolder(b bool) error {
+	return appconfig.SetYariaDownloadInFolder(b)
+}
 func MantorexDataDir() string          { return appconfig.MantorexDataDir() }
 func MantorexResultsLimit() int        { return appconfig.MantorexResultsLimit() }
 func MantorexTorrentPort() int         { return appconfig.MantorexTorrentPort() }
