@@ -1103,13 +1103,13 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 	// Fast path: no cookies (avoids kooky/Edge DB hangs on Windows)
 	output, err := runYTDLPTimeout(ytDlpCmd, metaArgs, 45*time.Second)
 
-	// Auth/bot/Instagram empty-media → try once with browser cookies
+	// Auth/bot/Instagram empty-media → try with browser cookies (LibreWolf/Firefox preferred)
 	if err != nil && (needsCookies(string(output), err) || isInstagramURL(url)) {
 		cookieBrowser := d.cfg.CookieBrowser
 		if cookieBrowser == "" {
 			cookieBrowser = DetectBrowser()
 		}
-		// Extract cookies with a short timeout so UI never hangs forever
+		cookies.ClearCache()
 		cookieArgs := cookies.GetYTDLPCookieArgs(url, cookieBrowser)
 		if len(cookieArgs) > 0 {
 			withCookies := append([]string{}, metaArgs[:len(metaArgs)-len(args)]...)
@@ -1118,8 +1118,17 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 			output2, err2 := runYTDLPTimeout(ytDlpCmd, withCookies, 45*time.Second)
 			if err2 == nil {
 				output, err = output2, nil
-			} else if isCookieDBError(string(output2)) {
-				// Cookie DB locked — keep original no-cookie error
+			} else if isCookieDBError(string(output2)) || strings.Contains(strings.ToLower(string(output2)), "cannot decrypt") {
+				// Cookie DB locked / Brave decrypt failed — try fresh export once more
+				cookies.ClearCache()
+				if retry := cookies.GetYTDLPCookieArgs(url, cookieBrowser); len(retry) > 0 {
+					withCookies2 := append([]string{}, metaArgs[:len(metaArgs)-len(args)]...)
+					withCookies2 = append(withCookies2, retry...)
+					withCookies2 = append(withCookies2, args...)
+					if output3, err3 := runYTDLPTimeout(ytDlpCmd, withCookies2, 45*time.Second); err3 == nil {
+						output, err = output3, nil
+					}
+				}
 			} else {
 				output, err = output2, err2
 			}
@@ -1139,9 +1148,10 @@ func (d *YTDLPDownloader) GetMetadata(args []string) (string, string, error) {
 				return "", "", fmt.Errorf("video unavailable (private, deleted, or region-locked)")
 			case strings.Contains(errMsg, "empty media response"):
 				return "", "", fmt.Errorf("Instagram blocked anonymous access. Log into Instagram in Firefox/Chrome, then retry (yaria will use browser cookies)")
-			case strings.Contains(errMsg, "Sign in"), strings.Contains(errMsg, "Age-restricted"),
+			case strings.Contains(errMsg, "Sign in"), strings.Contains(errMsg, "sign-in"),
+				strings.Contains(errMsg, "Age-restricted"), strings.Contains(errMsg, "confirm your age"),
 				strings.Contains(errMsg, "confirm you're not a bot"):
-				return "", "", fmt.Errorf("sign-in required. Log into the site in your browser and try again")
+				return "", "", fmt.Errorf("sign-in required. Log into YouTube in Firefox/LibreWolf (Brave cookies often can't be read), then retry")
 			case strings.Contains(errMsg, "HTTP Error 429"):
 				return "", "", fmt.Errorf("rate limited, try again later")
 			case strings.Contains(errMsg, "HTTP Error 413"), strings.Contains(errMsg, "Request Entity Too Large"):
@@ -1951,7 +1961,7 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			continue
 		}
 		fmt.Fprintf(d.cfg.Stderr, "WARNING: All %d attempts failed. Trying fallback format...\n", d.cfg.MaxRetries)
-		// Try fallback format on last attempt (no cookies — avoid locked Chrome DB)
+		// Fallback keeps cookies — age-restricted YouTube fails without them.
 		if attempt == d.cfg.MaxRetries {
 			fallbackArgs := []string{
 				"--no-overwrites",
@@ -1978,12 +1988,24 @@ func (d *YTDLPDownloader) Download(args []string, tempDir string) (bool, error) 
 			if ref := strings.TrimSpace(d.cfg.Referer); ref != "" {
 				fallbackArgs = append(fallbackArgs, "--referer", ref, "--add-header", "Referer:"+ref)
 			}
+			// Re-resolve cookies (may pick LibreWolf after Brave decrypt failed)
+			cookies.ClearCache()
+			fbCookieURL := argURL
+			if d.cfg.Referer != "" {
+				fbCookieURL = d.cfg.Referer
+			}
+			fbBrowser := d.cfg.CookieBrowser
+			if fbBrowser == "" {
+				fbBrowser = DetectBrowser()
+			}
+			fallbackArgs = append(fallbackArgs, cookies.GetYTDLPCookieArgs(fbCookieURL, fbBrowser)...)
 			if d.cfg.IsAudioOnly {
 				fallbackArgs = append(fallbackArgs, "--extract-audio", "--audio-format", d.cfg.AudioFormat)
 			} else if directFile {
 				fallbackArgs = append(fallbackArgs, "--format", "best")
 			} else {
-				fallbackArgs = append(fallbackArgs, "--format", "bestvideo[height<=1080]+bestaudio/best", "--merge-output-format", "mp4")
+				// Prefer progressive "best" so age-gated videos with only format 18 still work
+				fallbackArgs = append(fallbackArgs, "--format", "bestvideo+bestaudio/best/b", "--merge-output-format", "mp4")
 			}
 			fallbackArgs = append(fallbackArgs, d.ffmpegArgs()...)
 			fallbackArgs = append(fallbackArgs, args...)
@@ -2071,9 +2093,11 @@ func needsCookies(output string, err error) bool {
 		s += " " + strings.ToLower(err.Error())
 	}
 	return strings.Contains(s, "sign in") ||
+		strings.Contains(s, "sign-in") ||
 		strings.Contains(s, "not a bot") ||
 		strings.Contains(s, "age-restricted") ||
 		strings.Contains(s, "age restricted") ||
+		strings.Contains(s, "age-verification") ||
 		strings.Contains(s, "login required") ||
 		strings.Contains(s, "private video") ||
 		strings.Contains(s, "confirm your age") ||

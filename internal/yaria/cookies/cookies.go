@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -300,17 +302,15 @@ func extractDomain(url string) string {
 }
 
 // GetYTDLPCookieArgs returns yt-dlp arguments for cookie authentication.
-// Tries kooky first (pure Go; can often read cookies while the browser is open),
-// falls back to yt-dlp's --cookies-from-browser only when a browser was detected.
-//
-// On a fresh install (no YouTube login cookies), kooky returns nothing and the
-// fallback may still fail if Edge/Chrome has the SQLite DB locked. Callers should
-// retry without cookie args when yt-dlp reports a cookie-DB copy error.
+// Order:
+//  1. kooky export to ~/.yaria/cookies.txt (works while browser is open)
+//  2. yt-dlp --cookies-from-browser export (Firefox/LibreWolf preferred;
+//     Brave/Chrome often fail on Linux with "cannot decrypt v11 cookies")
+//  3. direct --cookies-from-browser as last resort (skipped on Windows to avoid hangs)
 //
 // Note: yt-dlp often says "Chrome cookie database" for any Chromium browser
 // (including Edge/Brave), so that message does not mean Chrome is installed.
 func GetYTDLPCookieArgs(url string, fallbackBrowser string) []string {
-	// Try kooky first
 	var cookiesFile string
 
 	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") ||
@@ -320,20 +320,163 @@ func GetYTDLPCookieArgs(url string, fallbackBrowser string) []string {
 		cookiesFile = ExtractSiteCookies(url)
 	}
 
-	if cookiesFile != "" {
-		info, err := os.Stat(cookiesFile)
-		if err == nil && info.Size() > 50 {
-			return []string{"--cookies", cookiesFile}
+	if cookiesFile != "" && cookieFileLooksAuthed(cookiesFile, url) {
+		return []string{"--cookies", cookiesFile}
+	}
+
+	// Prefer Firefox-family browsers: Brave/Chrome cookie decryption often
+	// fails on Linux ("cannot decrypt v11 cookies: no key found").
+	browsers := cookieBrowserCandidates(fallbackBrowser)
+	for _, b := range browsers {
+		if b == "" {
+			continue
+		}
+		if exported := exportCookiesViaYTDLP(b); exported != "" {
+			return []string{"--cookies", exported}
 		}
 	}
 
-	// Do NOT fall back to --cookies-from-browser here.
-	// On Windows, yt-dlp's browser cookie copy often hangs or fails while Edge
-	// is open, which freezes "Fetching..." in the GUI. Public videos work without
-	// cookies; auth/age-gated content uses kooky when cookies are readable.
-	// Callers that need --cookies-from-browser should pass it explicitly.
-	_ = fallbackBrowser
+	// Last resort: let yt-dlp read the browser DB itself (can hang on Windows).
+	if runtime.GOOS != "windows" {
+		for _, b := range browsers {
+			if b == "" {
+				continue
+			}
+			// Skip pure chromium names that commonly fail decrypt — Firefox forks first.
+			low := strings.ToLower(b)
+			if strings.HasPrefix(low, "brave") || strings.HasPrefix(low, "chrome") ||
+				strings.HasPrefix(low, "chromium") || strings.HasPrefix(low, "edge") {
+				continue
+			}
+			return []string{"--cookies-from-browser", b}
+		}
+	}
 	return nil
+}
+
+// cookieFileLooksAuthed returns true if the netscape cookie file is large enough
+// and, for YouTube, contains a login marker (LOGIN_INFO / SID / SAPISID).
+func cookieFileLooksAuthed(path, url string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < 50 {
+		return false
+	}
+	if !(strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") ||
+		strings.Contains(url, "google.com")) {
+		return true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	// Any of these usually means a real Google/YouTube session.
+	return strings.Contains(s, "\tLOGIN_INFO\t") ||
+		strings.Contains(s, "\tSAPISID\t") ||
+		strings.Contains(s, "\t__Secure-1PSID\t") ||
+		strings.Contains(s, "\tSID\t")
+}
+
+func cookieBrowserCandidates(fallbackBrowser string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(b string) {
+		b = strings.TrimSpace(b)
+		if b == "" || seen[b] {
+			return
+		}
+		seen[b] = true
+		out = append(out, b)
+	}
+	add(fallbackBrowser)
+	// Always try LibreWolf/Firefox profile paths even if DetectBrowser picked Brave.
+	home, _ := os.UserHomeDir()
+	for _, root := range []string{
+		filepath.Join(home, ".librewolf"),
+		filepath.Join(home, ".var", "app", "io.gitlab.librewolf-community", ".librewolf"),
+		filepath.Join(home, "Library", "Application Support", "LibreWolf"),
+		filepath.Join(home, ".mozilla", "firefox"),
+		filepath.Join(home, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox"),
+	} {
+		if p := newestFirefoxProfile(root); p != "" {
+			add("firefox:" + p)
+		}
+	}
+	add("firefox")
+	add("brave")
+	add("chrome")
+	add("chromium")
+	return out
+}
+
+func newestFirefoxProfile(root string) string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	var best string
+	var bestTime time.Time
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		cookiesDB := filepath.Join(root, name, "cookies.sqlite")
+		st, err := os.Stat(cookiesDB)
+		if err != nil {
+			continue
+		}
+		if best == "" || st.ModTime().After(bestTime) {
+			best = filepath.Join(root, name)
+			bestTime = st.ModTime()
+		}
+	}
+	return best
+}
+
+// exportCookiesViaYTDLP writes a netscape cookies file using yt-dlp's browser reader.
+// Returns path on success. Times out quickly so the UI never hangs.
+func exportCookiesViaYTDLP(browser string) string {
+	yt := "yt-dlp"
+	if runtime.GOOS == "windows" {
+		yt = "yt-dlp.exe"
+	}
+	if _, err := exec.LookPath(yt); err != nil {
+		return ""
+	}
+	outPath := getCookiesFilePath()
+	// Export without needing a real URL — yt-dlp still loads browser cookies.
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, yt,
+		"--cookies-from-browser", browser,
+		"--cookies", outPath,
+		"--skip-download",
+		"--no-warnings",
+		"https://www.youtube.com",
+	)
+	out, err := cmd.CombinedOutput()
+	msg := strings.ToLower(string(out))
+	if err != nil {
+		// Decrypt failures (Brave/Chrome v11) or locked DB — try next browser
+		if strings.Contains(msg, "decrypt") || strings.Contains(msg, "could not copy") ||
+			strings.Contains(msg, "cookie") && strings.Contains(msg, "database") {
+			return ""
+		}
+		// Some yt-dlp versions still write cookies before failing the dummy URL
+	}
+	if cookieFileLooksAuthed(outPath, "https://www.youtube.com") {
+		cacheMu.Lock()
+		cachedFile = outPath
+		cachedAt = time.Now()
+		cacheMu.Unlock()
+		_ = os.Chmod(outPath, 0600)
+		return outPath
+	}
+	return ""
 }
 
 func init() {
