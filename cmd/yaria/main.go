@@ -16,7 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "1.2.4"
+const version = "1.2.5"
 
 // Site patterns for auto-detection
 var (
