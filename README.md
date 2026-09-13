@@ -279,6 +279,6 @@ YariaPlus/
   <a href="https://yaria.live">yaria.live</a>
   ·
   <a href="https://www.npmjs.com/package/@zsnero/yaria">npm</a>
-  ·
+  <!-- · -->
   <!-- <a href="https://yaria.live/docs">docs</a> -->
 </p>
