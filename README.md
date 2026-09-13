@@ -34,14 +34,14 @@
 
 ---
 
-## 🧩 What is this repo?
+## What is this repo?
 
 **YariaPlus** = **CLI + shared Go module** used by:
 
-| Consumer                       | Role                            |
-| :----------------------------- | :------------------------------ |
-| 🖥️ **Yaria CLI** (`cmd/yaria`) | Terminal app → `yaria` binary   |
-| 🪟 **YariaApp**                | Desktop GUI imports this module |
+| Consumer                    | Role                            |
+| :-------------------------- | :------------------------------ |
+| **Yaria CLI** (`cmd/yaria`) | Terminal app → `yaria` binary   |
+| **YariaApp**                | Desktop GUI imports this module |
 
 ```text
 Projects/
@@ -51,11 +51,13 @@ Projects/
 
 ---
 
+<!--
 ## ✨ Features
 
 <table>
 <tr>
 <td width="50%" valign="top">
+
 
 ### 🆓 Free downloader
 
@@ -83,10 +85,13 @@ Community builds omit the `pro` tag.
 </td>
 </tr>
 </table>
+-->
 
 ---
 
-## 🚀 Quick start
+<!-- ## 🚀 Quick start -->
+
+## Quick start
 
 ```bash
 # Interactive menu
@@ -105,7 +110,9 @@ yaria --help
 yaria --version
 ```
 
-### ⌨️ Commands
+<!-- ### ⌨️ Commands-->
+
+### Commands
 
 | Command                | Description             |
 | :--------------------- | :---------------------- |
@@ -131,7 +138,9 @@ yaria --version
 
 ---
 
-## 📦 Install
+<!-- ## 📦 Install -->
+
+## Install
 
 <details open>
 <summary><b>npm</b></summary>
@@ -160,7 +169,9 @@ make install-pro
 
 ---
 
-## 🔧 Dependencies (auto-managed)
+<!-- ## 🔧 Dependencies (auto-managed) -->
+
+## Dependencies
 
 Prefers **PATH**, otherwise downloads locally:
 
@@ -193,7 +204,9 @@ winget install yt-dlp.yt-dlp aria2
 
 ---
 
-## ⚙️ Configuration
+<!-- ## ⚙️ Configuration -->
+
+## Configuration
 
 ```text
 ~/.config/yaria/app.toml
@@ -216,7 +229,9 @@ Created on first run (legacy `app.yaml` migrates automatically).
 
 ---
 
-## 🛠️ Build tags
+<!-- ## 🛠️ Build tags-->
+
+## Build tags
 
 | Tag      | Result                  |
 | :------- | :---------------------- |
@@ -255,7 +270,9 @@ YariaPlus/
 
 ---
 
-## 🔐 License & Pro
+<!-- ## 🔐 License & Pro -->
+
+## License & Pro
 
 - Keys via [yaria.live](https://yaria.live)
 - CLI: `activate` · `status` · `deactivate`
@@ -275,7 +292,7 @@ YariaPlus/
 
 <p align="center">
   <img src="assets/yaria-icon.png" width="52" alt="Yaria" /><br/><br/>
-  <b>Fast downloads. Your machine. Your files.</b><br/>
+  <!-- <b>Fast downloads. Your machine. Your files.</b><br/> -->
   <a href="https://yaria.live">yaria.live</a>
   ·
   <a href="https://www.npmjs.com/package/@zsnero/yaria">npm</a>
