@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://yaria.live"><img src="https://img.shields.io/badge/website-yaria.live-8b6cef?style=for-the-badge" alt="Website" /></a>
   <a href="https://www.npmjs.com/package/@zsnero/yaria"><img src="https://img.shields.io/npm/v/@zsnero/yaria?style=for-the-badge&logo=npm&logoColor=white&label=npm" alt="npm" /></a>
-  <a href="https://yaria.live/docs"><img src="https://img.shields.io/badge/docs-guide-6366f1?style=for-the-badge" alt="Docs" /></a>
+  <!-- <a href="https://yaria.live/docs"><img src="https://img.shields.io/badge/docs-guide-6366f1?style=for-the-badge" alt="Docs" /></a> -->
 </p>
 
 <p align="center">
@@ -38,10 +38,10 @@
 
 **YariaPlus** = **CLI + shared Go module** used by:
 
-| Consumer | Role |
-|:--|:--|
-| 🖥️ **Yaria CLI** (`cmd/yaria`) | Terminal app → `yaria` binary |
-| 🪟 **YariaApp** | Desktop GUI imports this module |
+| Consumer                       | Role                            |
+| :----------------------------- | :------------------------------ |
+| 🖥️ **Yaria CLI** (`cmd/yaria`) | Terminal app → `yaria` binary   |
+| 🪟 **YariaApp**                | Desktop GUI imports this module |
 
 ```text
 Projects/
@@ -59,24 +59,24 @@ Projects/
 
 ### 🆓 Free downloader
 
-- 🎬 **1000+ sites** (yt-dlp)  
-- ⚡ **aria2** multi-connection  
-- 🎨 Interactive **Bubble Tea** TUI  
-- 🎵 Playlists & audio-only  
-- 📦 mp4 / mkv / webm  
-- 🧵 Background daemon  
-- 🍪 Browser cookies  
-- 🔧 Auto-install tools  
+- 🎬 **1000+ sites** (yt-dlp)
+- ⚡ **aria2** multi-connection
+- 🎨 Interactive **Bubble Tea** TUI
+- 🎵 Playlists & audio-only
+- 📦 mp4 / mkv / webm
+- 🧵 Background daemon
+- 🍪 Browser cookies
+- 🔧 Auto-install tools
 
 </td>
 <td width="50%" valign="top">
 
 ### 💎 Pro (`-tags pro`)
 
-- 🔍 Multi-provider torrent search  
-- 📡 Stream & download torrents  
-- 📚 Library & watch progress  
-- 🔗 APIs for the **desktop** app  
+- 🔍 Multi-provider torrent search
+- 📡 Stream & download torrents
+- 📚 Library & watch progress
+- 🔗 APIs for the **desktop** app
 
 Community builds omit the `pro` tag.
 
@@ -107,27 +107,27 @@ yaria --version
 
 ### ⌨️ Commands
 
-| Command | Description |
-|:--|:--|
-| `yaria` | Main menu |
-| `yaria <URL>` | Download shortcut |
-| `yaria download` | Format / resolution TUI |
-| `yaria download <URL>` | CLI download |
-| `yaria <magnet>` | Stream magnet |
-| `yaria activate <key>` | Activate Pro |
-| `yaria deactivate` | Remove license |
-| `yaria status` | License / device info |
-| `yaria daemon` | Background downloads |
+| Command                | Description             |
+| :--------------------- | :---------------------- |
+| `yaria`                | Main menu               |
+| `yaria <URL>`          | Download shortcut       |
+| `yaria download`       | Format / resolution TUI |
+| `yaria download <URL>` | CLI download            |
+| `yaria <magnet>`       | Stream magnet           |
+| `yaria activate <key>` | Activate Pro            |
+| `yaria deactivate`     | Remove license          |
+| `yaria status`         | License / device info   |
+| `yaria daemon`         | Background downloads    |
 
 ### TUI keys
 
-| Key | Action |
-|:--|:--|
-| `↑` / `k` | Up |
-| `↓` / `j` | Down |
-| `Enter` | Select |
-| `Esc` | Back |
-| `Ctrl+C` | Quit |
+| Key       | Action |
+| :-------- | :----- |
+| `↑` / `k` | Up     |
+| `↓` / `j` | Down   |
+| `Enter`   | Select |
+| `Esc`     | Back   |
+| `Ctrl+C`  | Quit   |
 
 ---
 
@@ -164,13 +164,13 @@ make install-pro
 
 Prefers **PATH**, otherwise downloads locally:
 
-| Tool | Role |
-|:--|:--|
-| **yt-dlp** | Extraction |
-| **aria2c** | Multi-connection |
-| **ffmpeg** | Merge / remux |
-| **deno** | JS challenges |
-| **mpv** | Optional playback |
+| Tool       | Role              |
+| :--------- | :---------------- |
+| **yt-dlp** | Extraction        |
+| **aria2c** | Multi-connection  |
+| **ffmpeg** | Merge / remux     |
+| **deno**   | JS challenges     |
+| **mpv**    | Optional playback |
 
 <details>
 <summary>Manual install if auto-setup fails</summary>
@@ -201,27 +201,27 @@ winget install yt-dlp.yt-dlp aria2
 
 Created on first run (legacy `app.yaml` migrates automatically).
 
-| Key area | Use |
-|:--|:--|
-| `yaria.theme` | TUI theme |
-| `mantorex.*` | Data dir, ports (Pro) |
-| `ui.*` | Desktop prefs (YariaApp) |
-| `network.*` | Proxy, speed limit |
-| `api_keys.tmdb` | Optional metadata |
+| Key area        | Use                      |
+| :-------------- | :----------------------- |
+| `yaria.theme`   | TUI theme                |
+| `mantorex.*`    | Data dir, ports (Pro)    |
+| `ui.*`          | Desktop prefs (YariaApp) |
+| `network.*`     | Proxy, speed limit       |
+| `api_keys.tmdb` | Optional metadata        |
 
-| Path | Use |
-|:--|:--|
-| `~/.yaria/` | Cache, cookies, tools |
-| `~/Downloads/Mantorex` | Default Pro data dir |
+| Path                   | Use                   |
+| :--------------------- | :-------------------- |
+| `~/.yaria/`            | Cache, cookies, tools |
+| `~/Downloads/Mantorex` | Default Pro data dir  |
 
 ---
 
 ## 🛠️ Build tags
 
-| Tag | Result |
-|:--|:--|
-| *(none)* | Community CLI |
-| `pro` | CLI + Mantorex packages |
+| Tag      | Result                  |
+| :------- | :---------------------- |
+| _(none)_ | Community CLI           |
+| `pro`    | CLI + Mantorex packages |
 
 ```bash
 make build
@@ -257,19 +257,19 @@ YariaPlus/
 
 ## 🔐 License & Pro
 
-- Keys via [yaria.live](https://yaria.live)  
-- CLI: `activate` · `status` · `deactivate`  
-- Community: see [LICENSE](LICENSE)  
+- Keys via [yaria.live](https://yaria.live)
+- CLI: `activate` · `status` · `deactivate`
+- Community: see [LICENSE](LICENSE)
 - Pro terms: [yaria.live](https://yaria.live)
 
 ---
 
 ## 🔗 Related
 
-| Project | Role |
-|:--|:--|
-| **YariaPlus** (this) | CLI + shared library |
-| **[YariaApp](https://github.com/zsnero/yaria-app)** | Desktop GUI |
+| Project                                             | Role                 |
+| :-------------------------------------------------- | :------------------- |
+| **YariaPlus** (this)                                | CLI + shared library |
+| **[YariaApp](https://github.com/zsnero/yaria-app)** | Desktop GUI          |
 
 ---
 
@@ -280,5 +280,5 @@ YariaPlus/
   ·
   <a href="https://www.npmjs.com/package/@zsnero/yaria">npm</a>
   ·
-  <a href="https://yaria.live/docs">docs</a>
+  <!-- <a href="https://yaria.live/docs">docs</a> -->
 </p>
