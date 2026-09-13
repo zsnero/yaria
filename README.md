@@ -25,7 +25,7 @@
 
 ---
 
-## Demo
+<!-- ## Demo -->
 
 <p align="center">
   <img src="assets/yaria-cli.png" alt="Yaria CLI" width="900" />
@@ -34,7 +34,7 @@
 
 ---
 
-## What is this repo?
+<!-- ## What is this repo?
 
 **YariaPlus** = **CLI + shared Go module** used by:
 
@@ -50,7 +50,7 @@ Projects/
 ```
 
 ---
-
+-->
 <!--
 ## ✨ Features
 
