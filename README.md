@@ -7,7 +7,7 @@
 
 <p align="center">
   <b>Terminal video &amp; audio downloader</b> with a polished TUI<br/>
-  Free CLI · shared library for the desktop app · optional Pro builds
+  Free CLI · shared library for the desktop app
 </p>
 
 <p align="center">
