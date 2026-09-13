@@ -25,7 +25,7 @@
 
 ---
 
-## ✨ Demo
+## Demo
 
 <p align="center">
   <img src="assets/yaria-cli.png" alt="Yaria CLI" width="900" />
@@ -87,7 +87,7 @@ Community builds omit the `pro` tag.
 </table>
 -->
 
----
+<!-- --- -->
 
 <!-- ## 🚀 Quick start -->
 
