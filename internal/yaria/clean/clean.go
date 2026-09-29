@@ -214,9 +214,14 @@ func RemoveAll(dir string) (int64, error) {
 }
 
 func isPartialFile(name string) bool {
-	return strings.HasSuffix(name, ".part") ||
-		strings.HasSuffix(name, ".ytdl") ||
-		strings.HasSuffix(name, ".part-Frag0")
+	lower := strings.ToLower(name)
+	// yt-dlp HLS/DASH segment temps: "Title.mp4.part-Frag123" and
+	// ".Title.mp4.part-Frag2.part". Any index, not just Frag0.
+	if strings.Contains(lower, ".part-frag") {
+		return true
+	}
+	return strings.HasSuffix(lower, ".part") ||
+		strings.HasSuffix(lower, ".ytdl")
 }
 
 func isMetaFile(name string) bool {
